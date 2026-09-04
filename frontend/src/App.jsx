@@ -3,6 +3,7 @@ import { api, getToken } from "./api.js";
 import Login from "./components/Login.jsx";
 import Digest from "./components/Digest.jsx";
 import Watchlist from "./components/Watchlist.jsx";
+import { MarketPill } from "./components/Badges.jsx";
 
 const POLL_MS = 5000; // M1: client polling. SSE replaces this in M6 behind the same refresh seam.
 
@@ -11,13 +12,15 @@ export default function App() {
   const [username, setUsername] = useState("");
   const [items, setItems] = useState([]);
   const [changes, setChanges] = useState([]);
+  const [market, setMarket] = useState(null);
   const [error, setError] = useState(null);
 
   const refresh = useCallback(async () => {
     try {
-      const [wl, ch] = await Promise.all([api.getWatchlist(), api.getChanges()]);
-      setItems(wl);
-      setChanges(ch);
+      const st = await api.getState(); // single round trip: market + watchlist + changes
+      setItems(st.items);
+      setChanges(st.changes);
+      setMarket(st.market);
       setError(null);
     } catch (err) {
       if (err.status === 401) {
@@ -78,9 +81,12 @@ export default function App() {
             <span className="w-2.5 h-2.5 rounded-full bg-brand" />
             <span className="font-semibold">Signal</span>
           </div>
-          <button onClick={handleLogout} className="text-xs text-slate-400 hover:text-slate-700">
-            {username ? `${username} · ` : ""}Log out
-          </button>
+          <div className="flex items-center gap-3">
+            <MarketPill market={market} />
+            <button onClick={handleLogout} className="text-xs text-slate-400 hover:text-slate-700">
+              {username ? `${username} · ` : ""}Log out
+            </button>
+          </div>
         </div>
       </header>
 

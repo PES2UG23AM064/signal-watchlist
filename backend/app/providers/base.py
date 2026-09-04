@@ -9,23 +9,20 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Protocol, Sequence
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 
 
 class Quote(BaseModel):
+    """A raw quote as produced by a provider. Intentionally permissive — a provider may hand us
+    garbage (0, negative, an absurd jump), and we must NOT crash on it. Sanity checks live at the
+    ingestion boundary (`app.quotes.sanitize`), which flags a quote as suspect and quarantines it
+    rather than raising. Never validate-to-raise here."""
+
     symbol: str
     price: float
     volume: int
     event_time: datetime
     source: str
-
-    @field_validator("price")
-    @classmethod
-    def price_must_be_positive(cls, v: float) -> float:
-        # The integrity boundary: a non-positive price is never a real quote.
-        if v <= 0:
-            raise ValueError("price must be > 0")
-        return v
 
 
 class MarketDataProvider(Protocol):

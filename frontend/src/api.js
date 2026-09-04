@@ -55,6 +55,8 @@ export const api = {
   logout() {
     setToken(null);
   },
+  getState: () => req("/state"), // market + watchlist + ranked changes in one round trip
+  getMarket: () => req("/market", { auth: false }),
   getWatchlist: () => req("/watchlist"),
   addSymbol: (symbol) => req("/watchlist", { method: "POST", body: { symbol } }),
   removeSymbol: (symbol) => req(`/watchlist/${encodeURIComponent(symbol)}`, { method: "DELETE" }),

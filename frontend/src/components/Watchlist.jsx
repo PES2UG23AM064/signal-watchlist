@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { inr, pct, displaySymbol, timeAgo } from "../format.js";
+import { inr, pct, displaySymbol } from "../format.js";
+import { FreshnessBadge, SourceBadge } from "./Badges.jsx";
 
 function Row({ item, onSeen, onRemove }) {
   const ch = item.change_since_seen;
@@ -8,11 +9,14 @@ function Row({ item, onSeen, onRemove }) {
     <div className="bg-white rounded-2xl border border-slate-100 p-4 flex items-center justify-between">
       <div className="min-w-0">
         <div className="font-semibold text-slate-900">{displaySymbol(item.symbol)}</div>
-        <div className="text-xs text-slate-400 mt-0.5">updated {timeAgo(item.event_time)}</div>
+        <div className="flex items-center gap-1.5 mt-1">
+          <FreshnessBadge provenance={item.provenance} />
+          <SourceBadge provenance={item.provenance} />
+        </div>
       </div>
       <div className="flex items-center gap-3">
         <div className="text-right">
-          <div className="font-semibold text-slate-900">{inr(item.price)}</div>
+          <div className="font-semibold text-slate-900">{item.price == null ? "—" : inr(item.price)}</div>
           {ch ? (
             <div className={`text-sm font-medium ${up ? "text-up" : ch.direction === "down" ? "text-down" : "text-slate-400"}`}>
               {pct(ch.pct)} <span className="text-slate-400 font-normal">since seen</span>

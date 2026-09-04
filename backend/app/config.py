@@ -12,6 +12,12 @@ class Settings(BaseSettings):
     market_provider: str = "replay"
     replay_seed: int = 42
 
+    # Poller
+    poll_interval_seconds: float = 5.0
+    prune_interval_seconds: float = 120.0
+    quote_retention_hours: int = 24
+    run_poller: bool = True  # in-process poller in the API lifespan (single-container deploy)
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

@@ -42,15 +42,18 @@ async def login_or_register(username: str, pin: str) -> str:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "username and pin are required")
 
     async with db.pool().acquire() as conn:
-        row = await conn.fetchrow("select id, pin_hash, session_token from users where username=$1", username)
-        if row is None:
-            token = _new_token()
-            await conn.execute(
-                "insert into users (username, pin_hash, session_token) values ($1, $2, $3)",
-                username, _hash_pin(pin), token,
-            )
-            return token
-        if not _verify_pin(pin, row["pin_hash"]):
+        # Atomic create-or-nothing avoids a race where two concurrent first-logins for the same new
+        # username both see "not found" and the second INSERT hits the unique constraint (500).
+        created = await conn.fetchrow(
+            "insert into users (username, pin_hash, session_token) values ($1, $2, $3) "
+            "on conflict (username) do nothing returning session_token",
+            username, _hash_pin(pin), _new_token(),
+        )
+        if created is not None:
+            return created["session_token"]  # brand-new account
+        # Existing user -> verify the PIN.
+        row = await conn.fetchrow("select pin_hash, session_token from users where username=$1", username)
+        if row is None or not _verify_pin(pin, row["pin_hash"]):
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid pin")
         return row["session_token"]
 

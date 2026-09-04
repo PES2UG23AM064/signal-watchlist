@@ -1,4 +1,5 @@
 import { inr, pct, displaySymbol } from "../format.js";
+import { FreshnessBadge, SourceBadge } from "./Badges.jsx";
 
 export default function Digest({ changes, onMarkAllSeen }) {
   const meaningful = changes.filter((c) => c.is_meaningful);
@@ -53,8 +54,12 @@ export default function Digest({ changes, onMarkAllSeen }) {
                   </div>
                 </div>
               </div>
-              <div className="text-xs text-slate-400 mt-2">
-                you last saw {inr(c.last_seen.price)}
+              <div className="flex items-center justify-between mt-2">
+                <div className="text-xs text-slate-400">you last saw {inr(c.last_seen.price)}</div>
+                <div className="flex items-center gap-1.5">
+                  <FreshnessBadge provenance={c.provenance} />
+                  <SourceBadge provenance={c.provenance} />
+                </div>
               </div>
             </div>
           );
