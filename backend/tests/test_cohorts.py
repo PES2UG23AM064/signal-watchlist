@@ -47,6 +47,18 @@ def test_recovers_sector_structure_from_returns_alone():
     assert sorted(flat) == sorted(series) and len(flat) == len(set(flat))
 
 
+def test_model_symbols_are_aligned_with_corr_matrix():
+    """model.symbols must index model.corr positionally (a misaligned lookup once displayed 0.14 for a
+    pair whose true correlation was ~0.65)."""
+    series = _sector_series()
+    cands = dict(reversed(list({s: _candles(v) for s, v in series.items()}.items())))  # scrambled insertion order
+    model = cohorts.build(cands)
+    idx = {s: i for i, s in enumerate(model.symbols)}
+    assert model.symbols == sorted(model.symbols)
+    assert model.corr[idx["TCS.NS"], idx["INFY.NS"]] > 0.6
+    assert model.corr[idx["TCS.NS"], idx["HDFCBANK.NS"]] < 0.4
+
+
 def test_intra_cohort_correlation_exceeds_inter():
     series = _sector_series()
     model = cohorts.build({s: _candles(v) for s, v in series.items()})
@@ -87,3 +99,8 @@ def test_peer_residual_flags_the_one_moving_alone_not_the_pack():
     assert abs(res["INFY.NS"][1]) >= cohorts.PEER_Z_FLAG   # moving alone
     assert abs(res["TCS.NS"][1]) < cohorts.PEER_Z_FLAG     # moving with the pack -> not promoted
     assert abs(res["WIPRO.NS"][1]) < cohorts.PEER_Z_FLAG
+    # Regression: results must be PLAIN Python floats (numpy scalars break Pydantic/JSON serialization —
+    # a numpy.bool_ from `abs(np.float64) >= 2` 500'd /state once).
+    for v in res.values():
+        if v is not None:
+            assert type(v[0]) is float and type(v[1]) is float

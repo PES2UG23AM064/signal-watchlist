@@ -30,4 +30,8 @@ async def model_report() -> dict:
         report["shipped_model"] = {k: shipped[k] for k in ("version", "label", "features", "coef", "intercept")}
     except HTTPException:
         report["shipped_model"] = None
+    try:
+        report["cohorts"] = _read("cohort_report.json")  # co-movement cohorts: structure, stability, alert replay
+    except HTTPException:
+        report["cohorts"] = None
     return report

@@ -17,7 +17,7 @@ function ActivityTag({ activity }) {
 }
 
 // Explainability: every number behind the score. Nothing is a black box.
-function Explain({ e }) {
+function Explain({ e, peerZ }) {
   const rows = [
     ["Move since you looked", `${e.move_pct >= 0 ? "+" : ""}${e.move_pct.toFixed(2)}%`],
     ["Market-adjusted move", `${e.market_adjusted_pct >= 0 ? "+" : ""}${e.market_adjusted_pct.toFixed(2)}%`,
@@ -27,6 +27,7 @@ function Explain({ e }) {
     ["Volume vs 20-day average", `${e.vol_ratio.toFixed(1)}×`],
     ["52-week level", e.crossed ? `crossed its ${e.crossed}` : "not crossed"],
   ];
+  if (peerZ != null) rows.push(["vs its co-movement peers", `${Math.abs(peerZ).toFixed(1)}σ ${peerZ >= 0 ? "above" : "below"} the pack`]);
   return (
     <div className="mt-3 pt-3 border-t border-slate-100 text-xs space-y-1.5">
       {rows.map(([k, v, note]) => (
@@ -44,10 +45,72 @@ function Explain({ e }) {
   );
 }
 
+// Co-movement grouping is PRESENTATION ONLY: every symbol is still in `changes`; here we just fold
+// same-cohort, same-direction pack moves into one card, and always leave "moving alone" symbols out.
+function groupChanges(changes) {
+  const alone = changes.filter((c) => c.moving_alone);
+  const rest = changes.filter((c) => !c.moving_alone);
+  const packs = new Map();
+  const singles = [];
+  for (const c of rest) {
+    if (c.cohort_id == null) { singles.push(c); continue; }
+    const k = `${c.cohort_id}|${c.change_since_seen.direction}`;
+    if (!packs.has(k)) packs.set(k, []);
+    packs.get(k).push(c);
+  }
+  const groups = [];
+  for (const members of packs.values()) {
+    if (members.length >= 2) groups.push(members);
+    else singles.push(members[0]);
+  }
+  return { alone, groups, singles };
+}
+
+function median(xs) {
+  const s = [...xs].sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
+function GroupCard({ members, renderCard }) {
+  const [expanded, setExpanded] = useState(false);
+  const med = median(members.map((m) => m.change_since_seen.pct));
+  const up = med >= 0;
+  const anyMeaningful = members.some((m) => m.signal.is_meaningful);
+  return (
+    <div className={`bg-white rounded-2xl border p-4 ${anyMeaningful ? "border-slate-200 shadow-sm" : "border-slate-100 opacity-75"}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="font-semibold text-slate-900">{members.length} moving together</div>
+          <div className="text-sm text-slate-600 mt-0.5">
+            {members.map((m) => displaySymbol(m.symbol)).join(", ")} — moved as a pack, not one stock's news
+          </div>
+        </div>
+        <div className="text-right shrink-0">
+          <div className={`font-semibold ${up ? "text-up" : "text-down"}`}>{pct(med)}</div>
+          <div className="text-[11px] text-slate-400">median</div>
+        </div>
+      </div>
+      <div className="flex items-center justify-between mt-2.5">
+        <span
+          className="text-[11px] px-1.5 py-0.5 rounded bg-violet-50 text-violet-700"
+          title="These symbols' daily returns are highly correlated over the past year — they tend to move as one."
+        >
+          co-movement cohort
+        </span>
+        <button onClick={() => setExpanded(!expanded)} className="text-xs text-slate-400 hover:text-slate-700">
+          {expanded ? "collapse" : `show ${members.length}`}
+        </button>
+      </div>
+      {expanded && <div className="mt-3 space-y-2.5">{members.map(renderCard)}</div>}
+    </div>
+  );
+}
+
 export default function Digest({ changes, onMarkAllSeen }) {
   const [open, setOpen] = useState(null);
-  const meaningful = changes.filter((c) => c.signal.is_meaningful);
-  const count = meaningful.length;
+  const count = changes.filter((c) => c.signal.is_meaningful).length;
+  const { alone, groups, singles } = groupChanges(changes);
 
   if (changes.length === 0) {
     return (
@@ -59,6 +122,55 @@ export default function Digest({ changes, onMarkAllSeen }) {
       </section>
     );
   }
+
+  const renderCard = (c) => {
+    const up = c.change_since_seen.direction === "up";
+    const sig = c.signal;
+    const isOpen = open === c.symbol;
+    return (
+      <div
+        key={c.symbol}
+        className={`bg-white rounded-2xl border p-4 ${
+          c.moving_alone ? "border-amber-300 shadow-sm" : sig.is_meaningful ? "border-slate-200 shadow-sm" : "border-slate-100 opacity-75"
+        }`}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="font-semibold text-slate-900 flex items-center gap-2">
+              {displaySymbol(c.symbol)}
+              {c.moving_alone && (
+                <span
+                  className="text-[11px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-medium"
+                  title="This stock is moving very differently from the symbols it usually moves with — this is about IT, not the market."
+                >
+                  moving alone
+                </span>
+              )}
+            </div>
+            <div className="text-sm text-slate-600 mt-0.5">{c.headline}</div>
+          </div>
+          <div className="text-right shrink-0">
+            <div className="font-semibold text-slate-900">{inr(c.price)}</div>
+            <div className={`text-sm font-medium ${up ? "text-up" : "text-down"}`}>{pct(c.change_since_seen.pct)}</div>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between mt-2.5 gap-2">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <FreshnessBadge provenance={c.provenance} />
+            <SourceBadge provenance={c.provenance} />
+            <ActivityTag activity={sig.activity} />
+          </div>
+          <button onClick={() => setOpen(isOpen ? null : c.symbol)} className="text-xs text-slate-400 hover:text-slate-700 shrink-0">
+            {isOpen ? "hide" : "why?"}
+          </button>
+        </div>
+        <div className="text-xs text-slate-400 mt-1.5">you last saw {inr(c.last_seen.price)}</div>
+
+        {isOpen && <Explain e={sig.explain} peerZ={c.peer_residual_z} />}
+      </div>
+    );
+  };
 
   return (
     <section className="mb-6">
@@ -74,6 +186,9 @@ export default function Digest({ changes, onMarkAllSeen }) {
           <>
             <span className="font-semibold text-slate-900">{count}</span> of {changes.length}{" "}
             {count === 1 ? "needs" : "need"} your attention
+            {groups.length > 0 && (
+              <span className="text-slate-400"> · {groups.reduce((n, g) => n + g.length, 0)} folded into {groups.length} pack {groups.length === 1 ? "move" : "moves"}</span>
+            )}
           </>
         ) : (
           <>{changes.length} moved, but nothing unusual</>
@@ -81,49 +196,9 @@ export default function Digest({ changes, onMarkAllSeen }) {
       </p>
 
       <div className="space-y-2.5">
-        {changes.map((c) => {
-          const up = c.change_since_seen.direction === "up";
-          const sig = c.signal;
-          const isOpen = open === c.symbol;
-          return (
-            <div
-              key={c.symbol}
-              className={`bg-white rounded-2xl border p-4 ${
-                sig.is_meaningful ? "border-slate-200 shadow-sm" : "border-slate-100 opacity-75"
-              }`}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="font-semibold text-slate-900">{displaySymbol(c.symbol)}</div>
-                  <div className="text-sm text-slate-600 mt-0.5">{c.headline}</div>
-                </div>
-                <div className="text-right shrink-0">
-                  <div className="font-semibold text-slate-900">{inr(c.price)}</div>
-                  <div className={`text-sm font-medium ${up ? "text-up" : "text-down"}`}>
-                    {pct(c.change_since_seen.pct)}
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between mt-2.5 gap-2">
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <FreshnessBadge provenance={c.provenance} />
-                  <SourceBadge provenance={c.provenance} />
-                  <ActivityTag activity={sig.activity} />
-                </div>
-                <button
-                  onClick={() => setOpen(isOpen ? null : c.symbol)}
-                  className="text-xs text-slate-400 hover:text-slate-700 shrink-0"
-                >
-                  {isOpen ? "hide" : "why?"}
-                </button>
-              </div>
-              <div className="text-xs text-slate-400 mt-1.5">you last saw {inr(c.last_seen.price)}</div>
-
-              {isOpen && <Explain e={sig.explain} />}
-            </div>
-          );
-        })}
+        {alone.map(renderCard)}
+        {groups.map((g, i) => <GroupCard key={`g${i}`} members={g} renderCard={renderCard} />)}
+        {singles.map(renderCard)}
       </div>
     </section>
   );

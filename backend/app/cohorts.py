@@ -113,7 +113,9 @@ def build(candles_by_symbol: dict[str, list[Candle]], thresh: float = MERGE_THRE
             own = rets[:, idx[s]]
             peers = np.median(rets[:, [c for c in cols if c != idx[s]]], axis=1)
             sigma_resid[s] = float(np.std(own - peers, ddof=1))
-    return CohortModel(symbols=list(candles_by_symbol), corr=corr, cohorts=cohorts, cohort_of=cohort_of,
+    # `symbols` MUST be the corr-aligned (sorted) list from returns_matrix, not input insertion order —
+    # callers index `corr` by position in this list. (Thin-history symbols are not in corr at all.)
+    return CohortModel(symbols=symbols, corr=corr, cohorts=cohorts, cohort_of=cohort_of,
                        sigma_resid=sigma_resid, n_days=max(0, len(days) - 1))
 
 
@@ -134,6 +136,8 @@ def peer_residuals(model: CohortModel, moves: dict[str, float], elapsed_seconds:
             if not peers or not sig or sig <= 0:
                 out[s] = None
                 continue
-            resid = moves[s] - float(np.median(peers))
-            out[s] = (resid, resid / (sig * np.sqrt(elapsed_days)))
+            resid = float(moves[s] - float(np.median(peers)))
+            # Plain Python floats on purpose: these flow into Pydantic models / JSON, and numpy scalars
+            # (np.float64 -> np.bool_ on comparison) are not JSON-serializable.
+            out[s] = (resid, float(resid / (sig * float(np.sqrt(elapsed_days)))))
     return out

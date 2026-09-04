@@ -68,6 +68,27 @@ time with an embargo, out-of-sample, three pre-registered questions:
 | Does it predict the *direction* of the next move? | **No edge** (AUC 0.48) — so this app never tells you what to buy |
 | Does it predict an unusually *active* period (volatility clustering)? | **Weak, real** (AUC 0.54, 1.46× top-decile lift), driven by volume |
 
+### Where ML *does* work here: who moves with whom
+
+Prediction failed honestly, so ML is pointed at what it can actually do in this product. Indian retail
+watchlists are mostly correlated large-caps: on a red day everything is red and a naive digest screams
+N times — exactly when you most need triage. `backend/app/cohorts.py` clusters *your own* watched symbols
+by daily-**return** correlation over the real candles (average-linkage agglomerative clustering, merge
+while mean correlation ≥ 0.5, ~15 lines of numpy at runtime — no labels, no sector table). Then:
+
+- symbols in one cohort moving the same way **fold into one card** ("2 moving together — moved as a pack,
+  not one stock's news");
+- a symbol moving far from its cohort peers (**peer-residual z ≥ 2**, σ of the residual series) is
+  **promoted to the top as "moving alone"** — *this is about that stock, not the market.*
+
+Grouping is presentation only: every symbol stays in the list with its own reasons; nothing is hidden
+(unit-tested). Validation on the real candles (`backend/ml/validate_cohorts.py`, shown in the app):
+it found `{HDFCBANK, ICICIBANK}` and `{INFY, TCS}` from returns alone — **within-cohort correlation 0.66 vs
+0.23 across**; half-year vs half-year stability is **modest** (ARI 0.21, 5 of 9 symbols kept their grouping
+— thin windows flip borderline pairs, and we say so); replaying the year, digest cards fell **350 → 311
+(11%)** on this 9-stock set (it grows with more correlated names), with **26 "moving alone" flags and 0
+ever folded into a group** — an invariant, not a claim.
+
 So the ranking stays descriptive — the data gives no basis for "learned predictive weights," and we don't
 pretend otherwise. The one learned signal that ships is the **activity outlook** tag: a 3-coefficient
 logistic regression exported as JSON (`app/model/scoring_model.json`); production evaluates a dot

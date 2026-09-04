@@ -82,9 +82,62 @@ export default function ModelPanel() {
               which is why this is 3 features, not 30.
             </div>
           </div>
+
+          {report.cohorts && <CohortSection c={report.cohorts} />}
         </div>
       )}
     </section>
+  );
+}
+
+// Where ML demonstrably works here: unsupervised co-movement cohorts. Structure + stability + a
+// counterfactual alert replay — counts and correlations, so none of it can come back "null".
+function CohortSection({ c }) {
+  const s = c.structure, st = c.stability, a = c.alert_counterfactual;
+  const multi = (s.cohorts || []).filter((g) => g.length > 1);
+  return (
+    <div className="pt-3 border-t border-slate-100 space-y-3">
+      <div>
+        <div className="font-medium text-slate-900">Where ML does work: who moves with whom</div>
+        <p className="text-slate-600 text-sm mt-1">
+          We gave the model a year of daily <em>returns</em> and nothing else — no sector labels. It groups the
+          symbols that move as one, so a pack move folds into a single card and the stock moving <em>alone</em>
+          is promoted. Grouping never hides a symbol.
+        </p>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {multi.map((g, i) => (
+          <span key={i} className="text-[11px] px-2 py-1 rounded-full bg-violet-50 text-violet-700">
+            {g.map((x) => x.replace(/\.NS$/, "")).join(" · ")}
+          </span>
+        ))}
+        {(s.cohorts || []).filter((g) => g.length === 1).length > 0 && (
+          <span className="text-[11px] px-2 py-1 rounded-full bg-slate-100 text-slate-500">
+            {(s.cohorts || []).filter((g) => g.length === 1).length} move on their own
+          </span>
+        )}
+      </div>
+      <div className="grid grid-cols-3 gap-2 text-xs">
+        <Stat label="within-cohort corr" value={s.mean_intra_cohort_corr} sub={`vs ${s.mean_inter_cohort_corr} across`} />
+        <Stat label="out-of-sample stability" value={`${st.symbols_kept_grouping}`} sub={`ARI ${st.adjusted_rand_index} · half-year vs half-year`} />
+        <Stat label="alerts over the year" value={`${a.cards_old_rule} → ${a.cards_cohort_rule}`} sub={`${a.reduction_pct}% fewer · ${a.moving_alone_hidden_in_a_group} hidden`} />
+      </div>
+      <p className="text-[11px] text-slate-400">
+        Honest read: the sector structure is strong; half-year stability is modest (thin windows flip borderline pairs);
+        the alert reduction is small on a 9-stock set and grows with more correlated names. {a.moving_alone_flags} "moving
+        alone" flags, none ever folded into a group — that's a test, not a claim.
+      </p>
+    </div>
+  );
+}
+
+function Stat({ label, value, sub }) {
+  return (
+    <div className="bg-slate-50 rounded-lg p-2">
+      <div className="text-slate-500">{label}</div>
+      <div className="text-slate-900 font-semibold mt-0.5">{value}</div>
+      <div className="text-slate-400">{sub}</div>
+    </div>
   );
 }
 

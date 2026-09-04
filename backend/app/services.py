@@ -15,13 +15,15 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime, timezone
 
 import asyncpg
+import numpy as np
 
-from . import baselines, db, quotes, scoring
+from . import baselines, cohorts, db, quotes, scoring
 from .baselines import INDEX_SYMBOL, Baselines
-from .models import (Activity, Change, ChangeRow, Explain, Provenance, Signal, Snapshot, WatchRow)
+from .models import (Activity, Change, ChangeRow, CohortInfo, Explain, Provenance, Signal, Snapshot, WatchRow)
 from .providers import Quote, get_provider
 from .providers.replay import ReplayProvider
 from .quotes import LatestQuote
@@ -236,19 +238,47 @@ async def mark_all_seen(user_id: str) -> None:
                     await _snapshot_upsert(conn, user_id, sym, latest[sym], idx)
 
 
+# --------------------------------------------------------------------------- co-movement cohorts
+
+_COHORT_CACHE: dict[frozenset, tuple[float, cohorts.CohortModel | None]] = {}
+COHORT_TTL_S = 3600  # cohorts change when the watchlist changes (key) or daily as candles refresh
+
+
+async def _cohort_model(conn: asyncpg.Connection, symbols: list[str]) -> cohorts.CohortModel | None:
+    """The user's co-movement cohorts from cached REAL candles, memoized per watchlist-set for an hour."""
+    key = frozenset(symbols)
+    hit = _COHORT_CACHE.get(key)
+    if hit and time.time() - hit[0] < COHORT_TTL_S:
+        return hit[1]
+    cands = {s: c for s in symbols if (c := await baselines.load_candles(conn, s))}
+    model = cohorts.build(cands) if len(cands) >= 2 else None
+    _COHORT_CACHE[key] = (time.time(), model)
+    return model
+
+
+def _cohort_infos(model: cohorts.CohortModel | None) -> list[CohortInfo]:
+    if model is None:
+        return []
+    idx = {s: i for i, s in enumerate(model.symbols)}
+    out = []
+    for k, g in enumerate(model.cohorts):
+        mean_corr = None
+        if len(g) > 1 and all(s in idx for s in g) and model.corr.size:
+            pairs = [model.corr[idx[a], idx[b]] for a in g for b in g if a < b]
+            mean_corr = round(float(np.mean(pairs)), 2) if pairs else None
+        out.append(CohortInfo(id=k, members=g, mean_corr=mean_corr))
+    return out
+
+
 # --------------------------------------------------------------------------- the digest
 
-def _changes_from_rows(rows: list[WatchRow]) -> list[ChangeRow]:
-    """'While you were away', ranked by descriptive unusualness. Every moved symbol is included
-    (rerank-never-suppress); is_meaningful marks the ones where a reason actually fired."""
+def _changes_from_rows(rows: list[WatchRow], model: cohorts.CohortModel | None = None) -> list[ChangeRow]:
+    """'While you were away'. Every moved symbol is included (rerank-never-suppress); is_meaningful marks
+    the ones where a reason fired. With a cohort model: symbols moving ALONE vs their co-movement peers
+    are promoted to the top; pack moves are tagged with their cohort so the client can collapse them.
+    Grouping is presentation only — nothing is ever removed from this list."""
     moved = [r for r in rows if r.has_baseline and r.change_since_seen and r.price is not None
              and r.change_since_seen.direction != "flat"]
-
-    def key(r: WatchRow):
-        if r.signal:
-            return (0, -r.signal.unusualness)
-        return (1, -abs(r.change_since_seen.pct))  # type: ignore[union-attr]
-    moved.sort(key=key)
 
     out: list[ChangeRow] = []
     for r in moved:
@@ -262,13 +292,42 @@ def _changes_from_rows(rows: list[WatchRow]) -> list[ChangeRow]:
         headline = " · ".join(sig.reasons) if sig.reasons else f"{ch.pct:+.2f}% since you last looked — nothing unusual"
         out.append(ChangeRow(symbol=r.symbol, price=r.price, provenance=r.provenance, last_seen=snap,
                              change_since_seen=ch, signal=sig, headline=headline))
+
+    if model is not None and out:
+        moves = {c.symbol: c.change_since_seen.pct / 100.0 for c in out}
+        elapsed = float(np.median([c.signal.explain.elapsed_seconds for c in out])) or scoring.MIN_ELAPSED_S
+        res = cohorts.peer_residuals(model, moves, elapsed_seconds=elapsed,
+                                     trading_day_s=scoring.TRADING_DAY_S, min_elapsed_s=scoring.MIN_ELAPSED_S)
+        for c in out:
+            c.cohort_id = model.cohort_of.get(c.symbol)
+            pr = res.get(c.symbol)
+            if pr is not None:
+                z = float(pr[1])
+                c.peer_residual_z = round(z, 2)
+                c.moving_alone = bool(abs(z) >= cohorts.PEER_Z_FLAG)  # plain bool: numpy.bool_ won't serialize
+                if c.moving_alone and not any("peers" in r for r in c.signal.reasons):
+                    c.signal.reasons.append(f"moving alone: {abs(pr[1]):.1f}σ vs its co-movement peers")
+                    c.signal.is_meaningful = True
+                    c.headline = " · ".join(c.signal.reasons)
+
+    def key(c: ChangeRow):
+        # moving-alone first (biggest divergence first), then by descriptive unusualness, then raw size
+        return (0 if c.moving_alone else 1,
+                -(abs(c.peer_residual_z) if c.moving_alone and c.peer_residual_z is not None else 0.0),
+                -c.signal.unusualness, -abs(c.change_since_seen.pct))
+    out.sort(key=key)
     return out
 
 
-async def get_state(user_id: str) -> tuple[list[WatchRow], list[ChangeRow]]:
-    """Watchlist + ranked changes in ONE pass — the endpoint the client polls."""
+async def get_state(user_id: str) -> tuple[list[WatchRow], list[ChangeRow], list[CohortInfo]]:
+    """Watchlist + ranked changes + cohorts in ONE pass — the endpoint the client polls."""
     rows = await list_watchlist(user_id)
-    return rows, _changes_from_rows(rows)
+    symbols = [r.symbol for r in rows]
+    model = None
+    if len(symbols) >= 2:
+        async with db.pool().acquire() as conn:
+            model = await _cohort_model(conn, symbols)
+    return rows, _changes_from_rows(rows, model), _cohort_infos(model)
 
 
 async def get_changes(user_id: str) -> list[ChangeRow]:
