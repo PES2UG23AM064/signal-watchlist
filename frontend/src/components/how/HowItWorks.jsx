@@ -58,8 +58,9 @@ export default function HowItWorks({ cohorts, items, market }) {
           <p className="text-sm text-ink-2 leading-relaxed">
             A 1% move means something very different for a calm stock than for a jumpy one, so we compare
             each move against what that stock normally does in a day — after taking out whatever the whole
-            market did that day. We also flag unusually heavy trading, a new 52-week high or low, and moves
-            that spiked and came back while you were away.
+            market did that day. We also flag a new 52-week high or low, and moves that spiked and came back
+            while you were away. Unusually heavy trading is noted on the card, but on its own it never
+            puts a stock in front of you — only what happened since you looked does.
           </p>
           <p className="text-sm text-ink-2 leading-relaxed mt-3">
             Everything else stays quiet. Tap <span className="font-medium text-ink">Why?</span> on any card

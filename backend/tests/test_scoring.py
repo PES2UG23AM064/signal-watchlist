@@ -7,7 +7,7 @@ import math
 import numpy as np
 
 from app import scoring
-from app.scoring import Features, features_for_bar, flags_and_reasons, live_features, unusualness
+from app.scoring import Features, features_for_bar, flags_and_reasons, is_meaningful, live_features, unusualness
 
 
 def _series(n=400, seed=7):
@@ -87,6 +87,21 @@ def test_flags_are_plain_english_and_threshold_driven():
     assert flags_and_reasons(quiet) == []
     # Unusualness is the ranking score (descriptive); it never decides visibility.
     assert unusualness(big) > unusualness(quiet)
+
+
+def test_volume_alone_never_promotes():
+    """Volume vs the 20-day average is about today, not about the user's window: it is a reason (chip) and
+    it ranks, but a symbol that moved 0.0% since you looked must not 'need attention' for it."""
+    busy_flat = Features(abs_resid_z=0.1, log_vol_ratio=math.log(2.4), cross_flag=0.0, resid_pct=0.0005,
+                         move_pct=0.0005, vol_ratio=2.4, crossed=None, sigma_used=0.012)
+    assert flags_and_reasons(busy_flat) == ["Volume 2.4× normal"]
+    assert not is_meaningful(busy_flat)
+    moved = Features(abs_resid_z=2.3, log_vol_ratio=0.0, cross_flag=0.0, resid_pct=0.02,
+                     move_pct=0.02, vol_ratio=1.0, crossed=None, sigma_used=0.012)
+    assert is_meaningful(moved)
+    broke = Features(abs_resid_z=0.5, log_vol_ratio=0.0, cross_flag=1.0, resid_pct=0.004,
+                     move_pct=0.004, vol_ratio=1.0, crossed="low", sigma_used=0.012)
+    assert is_meaningful(broke)
 
 
 def test_priority_monotonic_in_move_size():

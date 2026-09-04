@@ -104,12 +104,15 @@ export function MarketPill({ market }) {
   if (!market) return null;
   return (
     <span
-      className={`inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full
+      className={`inline-flex items-center gap-1.5 text-xs font-medium px-2 sm:px-2.5 py-1 rounded-full
         whitespace-nowrap shrink-0 ${market.is_open ? "chip-up" : "chip-neutral"}`}
-      title={market.detail}
+      title={`${market.label} — ${market.detail}`}
+      aria-label={market.label}
     >
       <span className={`w-1.5 h-1.5 rounded-full ${market.is_open ? "bg-up animate-pulse" : "bg-ink-4"}`} />
-      {market.label}
+      {/* On a phone the six top-bar items don't fit with the words; the dot + tooltip carry it. */}
+      <span className="hidden sm:inline">{market.label}</span>
+      <span className="sm:hidden">{market.is_open ? "Open" : "Closed"}</span>
     </span>
   );
 }

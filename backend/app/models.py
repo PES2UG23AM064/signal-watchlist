@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class RegisterRequest(BaseModel):
@@ -33,7 +33,7 @@ class AddSymbolRequest(BaseModel):
 
 
 class SetQuantityRequest(BaseModel):
-    quantity: float | None  # shares held; None clears it
+    quantity: float | None = Field(default=None, ge=0, le=1e9)  # shares held; None (or 0) clears it
 
 
 class InjectRequest(BaseModel):

@@ -16,13 +16,21 @@ async def get_watchlist(user: User = CurrentUser) -> list[WatchRow]:
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def add_symbol(body: AddSymbolRequest, user: User = CurrentUser) -> dict:
-    symbol = await services.add_symbol(user.id, body.symbol)
+    """Add (idempotent). The moment you add a symbol is your first look at it: that price is the baseline."""
+    try:
+        symbol = await services.add_symbol(user.id, body.symbol)
+    except services.UnknownSymbol as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"{e} isn't a symbol we can find on NSE") from e
+    except services.SymbolUnavailable as e:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE,
+                            f"can't get a price for {e} right now — try again in a minute") from e
     return {"symbol": symbol}
 
 
 @router.delete("/{symbol}")
 async def remove_symbol(symbol: str, user: User = CurrentUser) -> dict:
-    await services.remove_symbol(user.id, symbol)
+    if not await services.remove_symbol(user.id, symbol):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "symbol is not on your watchlist")
     return {"ok": True}
 
 
@@ -44,7 +52,8 @@ async def snooze(symbol: str, minutes: int | None = 60, user: User = CurrentUser
 
 @router.post("/{symbol}/seen")
 async def mark_seen(symbol: str, user: User = CurrentUser) -> dict:
-    await services.mark_seen(user.id, symbol)
+    if not await services.mark_seen(user.id, symbol):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "symbol is not on your watchlist")
     return {"ok": True}
 
 

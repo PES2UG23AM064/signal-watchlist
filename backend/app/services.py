@@ -38,6 +38,7 @@ from .models import (
     WatchRow,
 )
 from .providers import Quote, get_provider, replay_instance
+from .providers.yahoo import SymbolNotFound
 from .quotes import LatestQuote
 from .symbols import normalize
 
@@ -46,10 +47,13 @@ log = logging.getLogger("services")
 QUARANTINE_WINDOW_S = 300  # "bad ticks rejected recently" = last 5 minutes
 
 
+FLAT_PCT = 0.01  # below one basis point since you looked, a symbol has not "moved" — a paisa tick is not news
+
+
 def compute_change(seen_price: float, current_price: float) -> Change:
     abs_delta = round(current_price - seen_price, 4)
     pct = round((current_price - seen_price) / seen_price * 100, 4) if seen_price else 0.0
-    direction = "up" if abs_delta > 0 else "down" if abs_delta < 0 else "flat"
+    direction = "flat" if abs(pct) < FLAT_PCT else "up" if abs_delta > 0 else "down"
     return Change(abs=abs_delta, pct=pct, direction=direction)
 
 
@@ -130,14 +134,30 @@ async def _ensure_quote(symbol: str) -> None:
 
 # --------------------------------------------------------------------------- watchlist CRUD
 
+class UnknownSymbol(Exception):
+    """The exchange has no such symbol; nothing was added."""
+
+
+class SymbolUnavailable(Exception):
+    """We could not get a price for this symbol right now (upstream down) and won't add a dead row."""
+
+
 async def add_symbol(user_id: str, raw_symbol: str) -> str:
     symbol = normalize(raw_symbol)
+    # Validate BEFORE inserting: a typo must not become a permanent "no data" row on the list.
+    try:
+        b = await baselines.ensure_baselines(symbol)
+    except SymbolNotFound as e:
+        raise UnknownSymbol(symbol) from e
+    if b is None:
+        rp = replay_instance()
+        if rp is not None and not rp.can_quote(symbol):
+            raise SymbolUnavailable(symbol)   # no real anchor and Yahoo is down: we won't invent a price
     async with db.pool().acquire() as conn:
         await conn.execute(
             "insert into watchlist_items (user_id, symbol) values ($1, $2) on conflict (user_id, symbol) do nothing",
             user_id, symbol,
         )
-    b = await baselines.ensure_baselines(symbol)
     if b is not None:
         _sync_replay_profile(b)
         async with db.pool().acquire() as conn:
@@ -151,11 +171,13 @@ async def add_symbol(user_id: str, raw_symbol: str) -> str:
     return symbol
 
 
-async def remove_symbol(user_id: str, symbol: str) -> None:
+async def remove_symbol(user_id: str, symbol: str) -> bool:
+    """Remove a symbol and its snapshot. False if it wasn't on the list."""
     symbol = normalize(symbol)
     async with db.pool().acquire() as conn:
-        await conn.execute("delete from watchlist_items where user_id=$1 and symbol=$2", user_id, symbol)
+        status = await conn.execute("delete from watchlist_items where user_id=$1 and symbol=$2", user_id, symbol)
         await conn.execute("delete from read_state where user_id=$1 and symbol=$2", user_id, symbol)
+    return _updated(status)
 
 
 def _updated(status: str) -> bool:
@@ -164,8 +186,9 @@ def _updated(status: str) -> bool:
 
 
 async def set_quantity(user_id: str, symbol: str, quantity: float | None) -> bool:
+    """Shares held (validated >= 0 at the API edge). Zero means "I don't hold it": same as clearing."""
     symbol = normalize(symbol)
-    if quantity is not None and quantity < 0:
+    if quantity is not None and quantity <= 0:
         quantity = None
     async with db.pool().acquire() as conn:
         status = await conn.execute("update watchlist_items set quantity=$3 where user_id=$1 and symbol=$2",
@@ -197,9 +220,11 @@ async def _quarantined_recent(conn: asyncpg.Connection, symbols: list[str]) -> d
     """Bad ticks rejected recently, per symbol — makes the quarantine VISIBLE rather than silent."""
     if not symbols:
         return {}
+    # Window on received_at (when WE received it), not event_time: a future-dated bad tick has an
+    # event_time an hour ahead and would otherwise read as "recent" until the clock catches up.
     rows = await conn.fetch(
         "select symbol, count(*) as n from quotes where is_suspect and symbol = any($1::text[]) "
-        "and event_time > now() - make_interval(secs => $2) group by symbol", symbols, float(QUARANTINE_WINDOW_S))
+        "and received_at > now() - make_interval(secs => $2) group by symbol", symbols, float(QUARANTINE_WINDOW_S))
     return {r["symbol"]: int(r["n"]) for r in rows}
 
 
@@ -269,7 +294,7 @@ def _build_signal(lq: LatestQuote, snap: dict, b: Baselines, idx_now: float | No
 
     return Signal(
         reasons=reasons,
-        is_meaningful=bool(reasons),
+        is_meaningful=scoring.is_meaningful(f) or path_bonus > 0,   # volume alone never promotes
         unusualness=round(scoring.unusualness(f) + path_bonus, 3),
         explain=Explain(
             sigma_move=round(f.abs_resid_z, 2), move_pct=round(f.move_pct * 100, 3),
@@ -387,15 +412,21 @@ async def force_snapshot(conn: asyncpg.Connection, user_id: str, symbol: str, pr
     )
 
 
-async def mark_seen(user_id: str, symbol: str) -> None:
-    """Freeze the quote the user is currently seeing (and the index level) as their baseline."""
+async def mark_seen(user_id: str, symbol: str) -> bool:
+    """Freeze the quote the user is currently seeing (and the index level) as their baseline.
+    False if the symbol isn't on their list — a snapshot for something you don't watch is an orphan."""
     symbol = normalize(symbol)
+    async with db.pool().acquire() as conn:
+        watched = await conn.fetchval("select 1 from watchlist_items where user_id=$1 and symbol=$2", user_id, symbol)
+    if not watched:
+        return False
     await _ensure_quote(symbol)
     async with db.pool().acquire() as conn:
         latest = await quotes.latest_quotes(conn, [symbol, INDEX_SYMBOL])
         if symbol in latest:
             idx = latest[INDEX_SYMBOL].price if INDEX_SYMBOL in latest else None
             await _snapshot_upsert(conn, user_id, symbol, latest[symbol], idx)
+    return True
 
 
 async def mark_all_seen(user_id: str) -> None:
@@ -456,8 +487,13 @@ def attention_score(unusualness: float, impact_inr: float | None) -> float:
 
 
 def _headline(sig: Signal, ch: Change) -> str:
-    """ONE lead reason on the card (the rest are in the panel), or the plain move if nothing fired."""
-    return sig.reasons[0] if sig.reasons else f"{ch.pct:+.2f}% since you last looked — nothing unusual"
+    """ONE lead reason on the card (the rest are chips), or the plain move if nothing promoted it.
+    Volume is never the lead: it can't put a symbol in front of you by itself (see scoring.is_meaningful)."""
+    lead = next((r for r in sig.reasons if not r.startswith("Volume")), None)
+    if lead:
+        return lead
+    base = f"{ch.pct:+.2f}% since you last looked"
+    return base if sig.reasons else base + " — nothing unusual"
 
 
 def _changes_from_rows(rows: list[WatchRow], model: cohorts.CohortModel | None = None) -> list[ChangeRow]:

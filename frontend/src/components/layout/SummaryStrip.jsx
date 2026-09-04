@@ -6,8 +6,9 @@ import { Stat } from "../ui/Bits.jsx";
 export default function SummaryStrip({ items, changes, loading }) {
   const live = changes.filter((c) => !c.snoozed_until);
   const attention = live.filter((c) => c.signal.is_meaningful).length;
-  const held = changes.filter((c) => c.impact_inr != null);
-  const netImpact = held.reduce((s, c) => s + c.impact_inr, 0);
+  // Holdings come from the watchlist, not the digest: a held symbol that hasn't moved is still held.
+  const held = items.filter((i) => i.impact_inr != null);
+  const netImpact = held.reduce((s, i) => s + i.impact_inr, 0);
   // "Since you last looked" is the product's unit of time: the oldest baseline on the list is how long
   // you've been away from the symbol you've been away from longest.
   const baselines = items.filter((i) => i.last_seen?.event_time).map((i) => new Date(i.last_seen.event_time).getTime());

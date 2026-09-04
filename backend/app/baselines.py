@@ -19,7 +19,7 @@ import asyncpg
 import numpy as np
 
 from . import db
-from .providers.yahoo import Candle, YahooError, YahooProvider
+from .providers.yahoo import Candle, SymbolNotFound, YahooError, YahooProvider
 
 log = logging.getLogger("baselines")
 
@@ -165,6 +165,8 @@ async def ensure_baselines(symbol: str, force: bool = False) -> Baselines | None
     yahoo = YahooProvider()
     try:
         candles = await yahoo.get_history(symbol)
+    except SymbolNotFound:
+        raise                                   # a definite "no such symbol": the caller refuses it
     except YahooError as e:
         log.warning("baseline backfill unavailable for %s: %s", symbol, e)
         return None

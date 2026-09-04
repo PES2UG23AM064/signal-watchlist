@@ -59,6 +59,10 @@ class YahooError(Exception):
     """Upstream failed, rate-limited, or returned an unusable payload."""
 
 
+class SymbolNotFound(YahooError):
+    """The exchange has no such symbol (a definite 404, not an outage) — callers should refuse it."""
+
+
 @dataclass(frozen=True)
 class Candle:
     day: date
@@ -92,6 +96,8 @@ class YahooProvider:
             raise YahooError(f"network error for {symbol}: {e}") from e
         if resp.status_code == 429:
             raise YahooError(f"rate limited fetching {symbol}")
+        if resp.status_code == 404:
+            raise SymbolNotFound(f"{symbol} is not a known symbol")
         if resp.status_code != 200:
             raise YahooError(f"HTTP {resp.status_code} for {symbol}")
         try:

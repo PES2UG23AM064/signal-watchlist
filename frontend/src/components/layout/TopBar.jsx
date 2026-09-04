@@ -41,7 +41,7 @@ export default function TopBar({
   return (
     <header className="sticky top-0 z-30 bg-app/85 backdrop-blur-md border-b border-line">
       <div className="mx-auto max-w-[1400px] px-4 lg:px-6">
-        <div className="h-14 flex items-center gap-3">
+        <div className="h-14 flex items-center gap-1.5 sm:gap-3">
           <div className="flex items-center gap-2 shrink-0">
             <span className="relative flex w-2.5 h-2.5">
               {live && <span className="absolute inset-0 rounded-full bg-brand animate-ping opacity-60" />}

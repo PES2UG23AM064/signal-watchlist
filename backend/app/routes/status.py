@@ -22,7 +22,7 @@ async def status() -> dict:
     async with db.pool().acquire() as conn:
         symbols = [r["symbol"] for r in await conn.fetch("select distinct symbol from watchlist_items order by symbol")]
         latest = await quotes.latest_quotes(conn, symbols + [INDEX_SYMBOL]) if symbols else {}
-        quarantined_hour = await conn.fetchval("select count(*) from quotes where is_suspect and event_time > now() - interval '1 hour'")
+        quarantined_hour = await conn.fetchval("select count(*) from quotes where is_suspect and received_at > now() - interval '1 hour'")
         quote_rows = await conn.fetchval("select count(*) from quotes")
     m = market_status()
     return {

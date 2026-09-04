@@ -142,6 +142,14 @@ def _assemble(move, idx_move, beta, sigma, vol, avg_vol, price_now, price_ref, h
 
 # --------------------------------------------------------------------------- flags & reasons (deterministic)
 
+def is_meaningful(f: Features) -> bool:
+    """Does this deserve the user's attention on its own? Only things that happened SINCE THEY LOOKED
+    count: the market-adjusted move, or a 52-week break. Volume vs the 20-day average is about today, not
+    about their window — it is reported and ranked, but never promotes a symbol by itself (otherwise a
+    stock you added 10 seconds ago on a busy day would 'need attention' having moved 0.00%)."""
+    return f.abs_resid_z >= Z_FLAG or f.crossed is not None
+
+
 def flags_and_reasons(f: Features) -> list[str]:
     """Short plain-English reasons a person can read in a second. The numbers behind each one (sigma,
     market-adjusted %, exact level) live in the explain panel, not on the card. Threshold-driven only."""

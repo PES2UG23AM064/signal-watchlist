@@ -9,8 +9,9 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from . import db, poller, services
 from .config import settings
@@ -18,6 +19,7 @@ from .market import market_status
 from .models import MarketStatusModel
 from .providers import get_provider
 from .routes import auth, dev, events, model, state, status, watchlist
+from .symbols import InvalidSymbol
 
 logging.basicConfig(level=logging.INFO)
 
@@ -51,6 +53,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.exception_handler(InvalidSymbol)
+async def _invalid_symbol(_: Request, exc: InvalidSymbol) -> JSONResponse:
+    """A symbol that can't be a ticker is the caller's mistake (400), never a 500 — whichever route it
+    arrives through (body or path)."""
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
 
 app.include_router(auth.router)
 app.include_router(watchlist.router)

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertCircle, X } from "lucide-react";
 
 // The handful of shapes used in more than one place. Anything used once stays inline where it's used.
@@ -28,11 +28,15 @@ export function Bar({ value, max = 1, color = "bg-brand", className = "" }) {
 // Error surface: transient, out of the layout, dismissible. Replaces the old inline red block that
 // pushed content down every time a poll hiccuped.
 export function Toast({ message, onDismiss }) {
+  // The timer keys on the MESSAGE only. `onDismiss` is a fresh closure on every render, and the app
+  // re-renders on every poll — keyed on it, the 6s timer restarted every 5s and never fired.
+  const dismiss = useRef(onDismiss);
+  dismiss.current = onDismiss;
   useEffect(() => {
     if (!message) return;
-    const id = setTimeout(onDismiss, 6000);
+    const id = setTimeout(() => dismiss.current(), 6000);
     return () => clearTimeout(id);
-  }, [message, onDismiss]);
+  }, [message]);
   if (!message) return null;
   return (
     <div

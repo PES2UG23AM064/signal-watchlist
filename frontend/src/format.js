@@ -11,7 +11,8 @@ export function inrShort(n) {
 
 export function pct(n) {
   const v = Number(n);
-  return (v >= 0 ? "+" : "") + v.toFixed(2) + "%";
+  if (Math.abs(v) < 0.005) return "0.00%"; // never "-0.00%"
+  return (v > 0 ? "+" : "") + v.toFixed(2) + "%";
 }
 
 export function displaySymbol(sym) {

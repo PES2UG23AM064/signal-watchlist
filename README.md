@@ -9,7 +9,7 @@
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)
 ![React 18](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)
 ![Postgres](https://img.shields.io/badge/Postgres-Supabase-4169E1?logo=postgresql&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-45_unit_%2B_5_integration-brightgreen)
+![Tests](https://img.shields.io/badge/tests-47_unit_%2B_5_integration-brightgreen)
 
 **[Live app](https://signal-watchlist-web.onrender.com)** · **[API docs](https://signal-watchlist-api.onrender.com/docs)**
 
@@ -94,7 +94,7 @@ npm run dev                          # http://localhost:5173  (set VITE_API_URL 
 
 ```bash
 cd backend
-pytest tests -q --ignore=tests/integration      # 45 unit tests, no DB needed (~1s)
+pytest tests -q --ignore=tests/integration      # 47 unit tests, no DB needed (~1s)
 python -m scripts.smoke                          # end-to-end smoke against your running API
 ```
 
@@ -107,8 +107,8 @@ python -m scripts.smoke                          # end-to-end smoke against your
 | | |
 |---|---|
 | **"While you were away" digest** | A ranked list of what changed since your snapshot, not a price grid. Each card leads with one plain-English reason; a tap opens every number behind it. |
-| **Identity that follows you** | Email + bcrypt-hashed password (explicit *create account* vs *sign in* — a typo can't create a ghost account), server-issued session token. Tokens expire (30 days) and rotate on every login; logout rotates server-side so a copied token dies everywhere; 5 wrong passwords lock the account for 15 minutes; sign-in errors are generic so the API never reveals which emails exist. |
-| **Snapshot-based baseline** | Per-(user, symbol) snapshot of price + index level + event-time, with a monotonic watermark. Works across devices; can't be moved backward. |
+| **Identity that follows you** | Email + bcrypt-hashed password (explicit *create account* vs *sign in* — a typo can't create a ghost account). **One session per device** (a `sessions` table, tokens stored hashed): signing in on your phone does not sign your laptop out. Sessions expire after 30 days; logout deletes *that* session server-side so a copied token dies everywhere it was copied, while your other devices stay in (`?everywhere=true` ends them all); 5 wrong passwords lock the account for 15 minutes; sign-in errors are generic so the API never reveals which emails exist. |
+| **Snapshot-based baseline** | Per-(user, symbol) snapshot of price + index level + event-time, with a monotonic watermark. Works across devices; can't be moved backward. **Adding a symbol is your first look at it** — that price becomes the baseline, so the digest works from your first return visit with no extra step. A move under one basis point is "flat", never a card. |
 | **Exposure weighting** | Optionally record how many shares you hold. Held symbols show the **₹ impact since you last looked** and rank by a transparent attention score: `unusualness × (1 + log₁₀(1 + |₹ impact| / 1000))` — roughly ×2 at ₹10k at stake. Holdings *amplify* an unusual move; they never drown one out (tested). |
 | **Co-movement cohorts** | Stocks that move as a pack fold into one card ("2 moving together"); the stock moving *alone* is promoted. Learned from your own symbols' return correlations — no sector table. Nothing is ever hidden (tested). |
 | **Path since you looked** | From the quote ring: *"spiked +2.4% then retraced (3.1σ path move)"* — a ≥2σ excursion is reported even when the endpoint diff would hide it. |
@@ -120,8 +120,8 @@ python -m scripts.smoke                          # end-to-end smoke against your
 | Axis | What it tells you |
 |---|---|
 | **Market status** | Real IST trading hours + a 2026 NSE holiday table. |
-| **Freshness** | Age of the served quote: **live** (≤20s) → **delayed** (≤120s) → **stale**. |
-| **Source** | A loud **"simulated"** chip whenever data comes from the Replay generator rather than a live feed. |
+| **Freshness** | Age of the served quote, on every price: **fresh** (≤20s) → **delayed** (≤120s) → **stale**. Deliberately not the word "live" — age and source are different facts. |
+| **Source** | A loud **"simulated"** label whenever data comes from the Replay generator rather than a live feed — said once in the summary strip when the whole page is on one source, and on every price when sources are mixed (the composite provider can serve some symbols live and some from the fallback). |
 
 ### Data integrity & resilience
 
@@ -163,7 +163,7 @@ So "2σ" means 2σ *of this stock's real history*.
 | Signal | Definition | Flag |
 |---|---|---|
 | **Market-adjusted move** | `\|move − β·NIFTY move\| / (σ_daily · √elapsed)` — a move the whole market made isn't news about this stock; √time scaling puts a 4-hour move and a 3-day move on one scale | ≥ 2σ |
-| **Volume** | vs this stock's 20-day average | ≥ 1.5× |
+| **Volume** | vs this stock's 20-day average — *supporting only*: it is shown and it ranks, but it never promotes a symbol by itself (it's about today, not about your window) | ≥ 1.5× |
 | **52-week break** | New high/low since your snapshot | any |
 | **Path excursion** | Peak move since you looked, from the quote ring — a stock that ran +3% and came back flat still *happened* | ≥ 2σ |
 | **Moving alone** | Peer-residual z-score vs its cohort (see below) — *this is about that stock, not the market* | ≥ 2 |
@@ -294,12 +294,12 @@ All endpoints except `/auth/register`, `/auth/login`, `/health`, `/market`, `/st
 | `POST` | `/auth/register` | Create an account (email, password ≥ 8, optional display name) → session token; 409 if taken |
 | `POST` | `/auth/login` | Sign in (email + password) → fresh session token; 401 generic, 429 when locked |
 | `GET` | `/auth/me` | Validate a remembered token → `{email, display_name}` |
-| `POST` | `/auth/logout` | Rotate the token server-side (kills it on every device) |
+| `POST` | `/auth/logout` | End this device's session server-side (`?everywhere=true` ends all of the account's sessions) |
 | `GET` | `/state` | **The one digest surface**: market status + watchlist + ranked changes + cohorts, one round trip |
 | `GET` | `/watchlist` | List watched symbols |
-| `POST` | `/watchlist` | Add a symbol (idempotent; `reliance` → `RELIANCE.NS`) |
-| `DELETE` | `/watchlist/{symbol}` | Remove a symbol |
-| `POST` | `/watchlist/{symbol}/seen` | Mark seen — advance this symbol's snapshot (monotonic) |
+| `POST` | `/watchlist` | Add a symbol and take its first snapshot (idempotent; `reliance` → `RELIANCE.NS`). `400` for something that can't be a ticker, `404` for one NSE doesn't have, `503` if no price can be verified right now — a typo never becomes a dead row |
+| `DELETE` | `/watchlist/{symbol}` | Remove a symbol and its snapshot (`404` if not watched) |
+| `POST` | `/watchlist/{symbol}/seen` | Mark seen — advance this symbol's snapshot (monotonic; `404` if not watched) |
 | `POST` | `/watchlist/seen-all` | Mark everything seen |
 | `PATCH` | `/watchlist/{symbol}/quantity` | Record shares held (rupee-impact ranking) |
 | `POST` | `/watchlist/{symbol}/snooze?minutes=60` | Hold out of "needs attention"; `0` clears |
@@ -342,7 +342,7 @@ Frontend: `VITE_API_URL` (defaults to `http://localhost:8000`).
 
 ```bash
 cd backend
-pytest tests -q --ignore=tests/integration            # 45 unit tests, ~1s, no database
+pytest tests -q --ignore=tests/integration            # 47 unit tests, ~1s, no database
 INTEGRATION=1 pytest tests/integration -q              # 5 DB-backed tests: integrity invariants + account lifecycle (needs DATABASE_URL)
 ruff check app ml tests                                # lint
 python -m scripts.smoke                                # end-to-end smoke against a running API
@@ -414,7 +414,7 @@ signal-watchlist/
 │   │   ├── train_scorer.py    Backtest: time split, embargo, block bootstrap, pre-registered labels
 │   │   └── validate_cohorts.py  Cohort structure, stability (ARI), alert counterfactual
 │   ├── scripts/smoke.py       End-to-end smoke test
-│   └── tests/                 45 unit tests + tests/integration (5, DB-backed)
+│   └── tests/                 47 unit tests + tests/integration (5, DB-backed)
 ├── frontend/src/
 │   ├── App.jsx                State, SSE + polling transport, drawers
 │   ├── api.js                 API client

@@ -1,14 +1,18 @@
 import { BellOff, Check, CheckCheck, ChevronDown, Layers, Radar, Undo2 } from "lucide-react";
 import { useState } from "react";
 import { inr, pct, displaySymbol, timeAgo } from "../../format.js";
-import { ProvenanceChips, ExtraReasons } from "../Badges.jsx";
+import { ProvenanceChips, ExtraReasons, FreshnessBadge } from "../Badges.jsx";
 import { SkeletonCard } from "../ui/Bits.jsx";
 
 // Co-movement grouping is PRESENTATION ONLY: every symbol is still in `changes`; here we just fold
 // same-cohort, same-direction pack moves into one card, and always leave "moving alone" symbols out.
+// Only MEANINGFUL moves are cards or groups. Everything else that moved is still listed — as one quiet
+// line each under "also moved" — so nothing is hidden, but a 0.01% drift never gets a card, and two
+// stocks that both drifted 0.00% are never announced as a "sector move".
 function groupChanges(changes) {
   const alone = changes.filter((c) => c.moving_alone);
-  const rest = changes.filter((c) => !c.moving_alone);
+  const quiet = changes.filter((c) => !c.moving_alone && !c.signal.is_meaningful);
+  const rest = changes.filter((c) => !c.moving_alone && c.signal.is_meaningful);
   const packs = new Map();
   const singles = [];
   for (const c of rest) {
@@ -22,7 +26,40 @@ function groupChanges(changes) {
     if (members.length >= 2) groups.push(members);
     else singles.push(members[0]);
   }
-  return { alone, groups, singles };
+  return { alone, groups, singles, quiet };
+}
+
+// The quiet rows: listed, ranked, one line each. Tap for the full breakdown like any card.
+function QuietList({ rows, onExplain }) {
+  if (rows.length === 0) return null;
+  return (
+    <div className="pt-1">
+      <div className="eyebrow mb-2">Also moved · nothing unusual</div>
+      <ul className="card divide-y divide-line overflow-hidden">
+        {rows.map((c) => {
+          const up = c.change_since_seen.direction === "up";
+          const reasons = (c.signal.reasons || []).filter((r) => !/^(Diverging from|Moving alone)/.test(r));
+          return (
+            <li
+              key={c.symbol}
+              onClick={() => onExplain(c.symbol)}
+              className="px-3.5 py-2 flex items-center justify-between gap-3 cursor-pointer hover:bg-surface2/70 transition-colors"
+            >
+              <div className="min-w-0 flex items-center gap-2 flex-wrap">
+                <span className="text-sm font-medium text-ink">{displaySymbol(c.symbol)}</span>
+                {reasons.map((r) => <span key={r} className="chip chip-neutral">{r}</span>)}
+                {c.provenance?.freshness !== "fresh" && <FreshnessBadge provenance={c.provenance} />}
+              </div>
+              <div className="shrink-0 text-right">
+                <span className={`num text-sm font-semibold ${up ? "text-up" : "text-down"}`}>{pct(c.change_since_seen.pct)}</span>
+                <span className="num text-2xs text-ink-4 ml-2">{inr(c.price)}</span>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
 }
 
 function median(xs) {
@@ -80,7 +117,7 @@ function GroupCard({ members, cohort, renderCard }) {
 
 export default function DigestFeed({ changes, cohorts, mixedSources, loading, onMarkAllSeen, onSnooze, onExplain }) {
   const snoozed = changes.filter((c) => c.snoozed_until);
-  const { alone, groups, singles } = groupChanges(changes.filter((c) => !c.snoozed_until));
+  const { alone, groups, singles, quiet } = groupChanges(changes.filter((c) => !c.snoozed_until));
   const folded = groups.reduce((n, g) => n + g.length, 0);
   const cohortById = new Map((cohorts || []).map((c) => [c.id, c]));
 
@@ -258,6 +295,15 @@ export default function DigestFeed({ changes, cohorts, mixedSources, loading, on
             <GroupCard key={`g${i}`} members={g} cohort={cohortById.get(g[0].cohort_id)} renderCard={renderCard} />
           ))}
           {singles.map(renderCard)}
+          {alone.length + groups.length + singles.length === 0 && quiet.length > 0 && (
+            <div className="card px-6 py-6 text-center">
+              <p className="font-semibold text-ink">Nothing needs your attention</p>
+              <p className="text-sm text-ink-3 mt-1">
+                <span className="num">{quiet.length}</span> {quiet.length === 1 ? "symbol" : "symbols"} moved, none unusually.
+              </p>
+            </div>
+          )}
+          <QuietList rows={quiet} onExplain={onExplain} />
           {snoozed.length > 0 && (
             <div className="pt-2">
               <div className="eyebrow mb-2 flex items-center gap-1.5">

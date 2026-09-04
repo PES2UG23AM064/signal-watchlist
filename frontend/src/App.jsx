@@ -61,10 +61,12 @@ export default function App() {
       setChanges(st.changes);
       setCohorts(st.cohorts || []);
       setMarket(st.market);
-      setError(null);
+      // A good refresh clears a REFRESH failure only. An action's error ("symbol not found") must survive
+      // the next background tick, or the user never gets to read it.
+      setError((e) => (e && e.source === "refresh" ? null : e));
     } catch (err) {
       if (err.status === 401) signOutLocally();
-      else setError(err.message || "Couldn't refresh your watchlist");
+      else setError({ message: err.message || "Couldn't refresh your watchlist", source: "refresh" });
     } finally {
       setLoaded(true);
     }
@@ -117,7 +119,7 @@ export default function App() {
       return true;
     } catch (err) {
       if (err.status === 401) signOutLocally();
-      else setError(err.message || "Something went wrong");
+      else setError({ message: err.message || "Something went wrong", source: "action" });
       return false;
     }
   };
@@ -250,7 +252,7 @@ export default function App() {
 
       <Legend open={legendOpen} onClose={closeLegend} />
 
-      <Toast message={error} onDismiss={() => setError(null)} />
+      <Toast message={error?.message} onDismiss={() => setError(null)} />
     </div>
   );
 }
