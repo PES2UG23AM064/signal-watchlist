@@ -16,9 +16,10 @@ import asyncpg
 
 from .providers import Quote
 
-# Sanity thresholds. A single-tick move beyond this fraction is almost certainly bad upstream data,
-# not a real market move (NSE has price bands well under this), so we quarantine it.
-MAX_TICK_JUMP = 0.5  # 50%
+# Sanity thresholds. NSE circuit filters cap a stock's single-session move at 20%, so a single-tick
+# jump beyond that is not a market move — it's bad or CONFLICTING upstream data (we hit this for real:
+# two pollers with different anchors writing to one table). Quarantine it rather than serve it.
+MAX_TICK_JUMP = 0.20  # 20% — NSE's widest circuit band
 # A quote whose event_time is meaningfully in the FUTURE (provider clock skew, a bad
 # regularMarketTime) is dangerous: since "latest = max(event_time)" and freshness = now - event_time,
 # it would pin itself as the permanent latest and report negative age -> "fresh" forever. Quarantine it.

@@ -18,6 +18,7 @@ import logging
 import asyncpg
 
 from . import db, quotes
+from .baselines import INDEX_SYMBOL
 from .config import settings
 from .providers import get_provider
 
@@ -25,8 +26,12 @@ log = logging.getLogger("poller")
 
 
 async def _unique_symbols(conn: asyncpg.Connection) -> list[str]:
+    """Every watched symbol once (fan-in) + the index, which the market-adjusted live feature needs."""
     rows = await conn.fetch("select distinct symbol from watchlist_items")
-    return [r["symbol"] for r in rows]
+    syms = [r["symbol"] for r in rows]
+    if syms and INDEX_SYMBOL not in syms:
+        syms.append(INDEX_SYMBOL)
+    return syms
 
 
 async def poll_once(pool: asyncpg.Pool) -> int:

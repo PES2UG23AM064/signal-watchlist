@@ -1,0 +1,6 @@
+# Dev/offline-only: training the scoring model and running tests.
+# Production (requirements.txt) deliberately does NOT include scikit-learn — the model ships as a
+# JSON artifact and runtime scoring is a numpy dot product + sigmoid.
+-r requirements.txt
+scikit-learn==1.6.1
+pytest==8.3.4

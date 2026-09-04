@@ -42,6 +42,34 @@ class Provenance(BaseModel):
     freshness: str         # "fresh" | "delayed" | "stale" | "no_data"
 
 
+class Explain(BaseModel):
+    """The numbers behind a score — the explainability panel. Nothing here is a black box."""
+
+    sigma_move: float          # market-adjusted move in units of this stock's own daily sigma (time-scaled)
+    move_pct: float            # raw move since you last looked, %
+    market_adjusted_pct: float # move minus beta * index move, %
+    vol_ratio: float           # today's volume / 20-day average
+    crossed: str | None        # "high" | "low" | None  (52-week level crossed since you last looked)
+    sigma_daily_pct: float     # the stock's real daily volatility, %
+    beta: float | None         # vs NIFTY (OLS on real candles)
+    elapsed_seconds: float
+
+
+class Activity(BaseModel):
+    """The one learned signal: P(entering an active period). Secondary tag, never the ranking."""
+
+    probability: float
+    version: str
+
+
+class Signal(BaseModel):
+    reasons: list[str]         # plain-English, threshold-driven; empty => nothing unusual
+    is_meaningful: bool        # = any reason fired (deterministic; the model never gates this)
+    unusualness: float         # descriptive ranking score (sigma-equivalent units)
+    explain: Explain
+    activity: Activity | None = None
+
+
 class WatchRow(BaseModel):
     symbol: str
     price: float | None
@@ -49,6 +77,7 @@ class WatchRow(BaseModel):
     has_baseline: bool
     last_seen: Snapshot | None = None
     change_since_seen: Change | None = None
+    signal: Signal | None = None   # present when we have a snapshot + real baselines
 
 
 class ChangeRow(BaseModel):
@@ -57,9 +86,8 @@ class ChangeRow(BaseModel):
     provenance: Provenance
     last_seen: Snapshot
     change_since_seen: Change
-    # M1 placeholder for the real scoring engine (M4): a naive magnitude flag + reason.
-    is_meaningful: bool
-    reason: str
+    signal: Signal
+    headline: str                  # reasons joined, or the plain % move if nothing unusual fired
 
 
 class MarketStatusModel(BaseModel):

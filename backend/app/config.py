@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     market_provider: str = "replay"
     replay_seed: int = 42
 
+    # Dev/demo endpoints (e.g. POST /dev/rewind). Auth-scoped and Replay-only; on for the hackathon demo.
+    enable_dev_endpoints: bool = True
+
     # Poller
     poll_interval_seconds: float = 5.0
     prune_interval_seconds: float = 120.0

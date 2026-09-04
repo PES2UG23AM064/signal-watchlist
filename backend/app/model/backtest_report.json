@@ -1,0 +1,216 @@
+{
+  "version": "lr-v1-20260904",
+  "data_source": "real NSE daily candles (Yahoo Finance), NOT the replay simulator",
+  "label": {
+    "primary": "max |move| over next 3 bars >= 2.0 sigma (follow-through / attention)",
+    "secondary": "directional continuation over 3 bars (pre-registered; expected ~0.5 AUC)"
+  },
+  "split": {
+    "method": "time-ordered, no shuffle",
+    "train_frac": 0.7,
+    "embargo_days": 3
+  },
+  "results": {
+    "test_auc": 0.4805,
+    "test_brier": 0.2028,
+    "test_base_rate": 0.2303,
+    "top_decile_realized_rate": 0.2449,
+    "top_decile_lift_vs_base": 1.06,
+    "directional_test_auc": 0.4772,
+    "calibration_deciles": [
+      {
+        "decile": 1,
+        "n": 50,
+        "mean_predicted": 0.2848,
+        "realized_rate": 0.26
+      },
+      {
+        "decile": 2,
+        "n": 50,
+        "mean_predicted": 0.3144,
+        "realized_rate": 0.28
+      },
+      {
+        "decile": 3,
+        "n": 50,
+        "mean_predicted": 0.3308,
+        "realized_rate": 0.2
+      },
+      {
+        "decile": 4,
+        "n": 50,
+        "mean_predicted": 0.3454,
+        "realized_rate": 0.18
+      },
+      {
+        "decile": 5,
+        "n": 50,
+        "mean_predicted": 0.3585,
+        "realized_rate": 0.3
+      },
+      {
+        "decile": 6,
+        "n": 49,
+        "mean_predicted": 0.3718,
+        "realized_rate": 0.1429
+      },
+      {
+        "decile": 7,
+        "n": 49,
+        "mean_predicted": 0.3885,
+        "realized_rate": 0.2653
+      },
+      {
+        "decile": 8,
+        "n": 49,
+        "mean_predicted": 0.4059,
+        "realized_rate": 0.2449
+      },
+      {
+        "decile": 9,
+        "n": 49,
+        "mean_predicted": 0.4348,
+        "realized_rate": 0.1837
+      },
+      {
+        "decile": 10,
+        "n": 49,
+        "mean_predicted": 0.5047,
+        "realized_rate": 0.2449
+      }
+    ],
+    "activity_label": {
+      "definition": "realized variance over next 3 days > trailing-sigma^2 * 3 (volatility clustering)",
+      "test_auc": 0.5372,
+      "test_base_rate": 0.3071,
+      "top_decile_lift_vs_base": 1.46,
+      "calibration_deciles": [
+        {
+          "decile": 1,
+          "n": 50,
+          "mean_predicted": 0.3405,
+          "realized_rate": 0.4
+        },
+        {
+          "decile": 2,
+          "n": 50,
+          "mean_predicted": 0.3764,
+          "realized_rate": 0.26
+        },
+        {
+          "decile": 3,
+          "n": 50,
+          "mean_predicted": 0.4012,
+          "realized_rate": 0.24
+        },
+        {
+          "decile": 4,
+          "n": 50,
+          "mean_predicted": 0.418,
+          "realized_rate": 0.24
+        },
+        {
+          "decile": 5,
+          "n": 50,
+          "mean_predicted": 0.4375,
+          "realized_rate": 0.22
+        },
+        {
+          "decile": 6,
+          "n": 49,
+          "mean_predicted": 0.4517,
+          "realized_rate": 0.3673
+        },
+        {
+          "decile": 7,
+          "n": 49,
+          "mean_predicted": 0.4693,
+          "realized_rate": 0.3061
+        },
+        {
+          "decile": 8,
+          "n": 49,
+          "mean_predicted": 0.4893,
+          "realized_rate": 0.2653
+        },
+        {
+          "decile": 9,
+          "n": 49,
+          "mean_predicted": 0.5199,
+          "realized_rate": 0.3265
+        },
+        {
+          "decile": 10,
+          "n": 49,
+          "mean_predicted": 0.5856,
+          "realized_rate": 0.449
+        }
+      ],
+      "coef_standardized": [
+        -0.0394,
+        0.3276,
+        0.0395
+      ]
+    }
+  },
+  "model": {
+    "features": [
+      "abs_resid_z",
+      "log_vol_ratio",
+      "cross_flag"
+    ],
+    "coef_standardized": [
+      0.0497,
+      0.272,
+      0.0087
+    ],
+    "intercept": -0.4489
+  },
+  "feature_correlation_train": {
+    "features": [
+      "abs_resid_z",
+      "log_vol_ratio",
+      "cross_flag"
+    ],
+    "matrix": [
+      [
+        1.0,
+        0.497,
+        0.166
+      ],
+      [
+        0.497,
+        1.0,
+        0.203
+      ],
+      [
+        0.166,
+        0.203,
+        1.0
+      ]
+    ]
+  },
+  "symbols": [
+    "BHARTIARTL.NS",
+    "HDFCBANK.NS",
+    "ICICIBANK.NS",
+    "INFY.NS",
+    "ITC.NS",
+    "LT.NS",
+    "RELIANCE.NS",
+    "SBIN.NS",
+    "TCS.NS"
+  ],
+  "n_symbols": 9,
+  "date_range": [
+    "2025-12-02",
+    "2026-09-01"
+  ],
+  "train_cutoff": "2026-06-15",
+  "n_train": 1134,
+  "n_test": 495,
+  "k_sigma": 2.0,
+  "n_forward_days": 3,
+  "trained_at": "2026-09-04T10:59:27.496684+00:00",
+  "sample_note": "symbol-days, but overlapping 3-day label windows and correlated large-caps put the effective sample in the low hundreds \u2014 which is why this is 3 features, not 30"
+}

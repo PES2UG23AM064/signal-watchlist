@@ -38,6 +38,15 @@ def test_normal_move_within_band_is_ok():
     assert is_suspect(_q(1339.0), prev_price=1300.0) is False
 
 
+def test_jump_guard_sits_at_nse_circuit_limit():
+    # NSE circuit filters cap a single-session move at 20%: 15% is a (violent but real) move,
+    # 25% in one tick is bad or conflicting data. This exact case bit us: two pollers with different
+    # anchors alternated ~43% swings on one symbol.
+    assert is_suspect(_q(1495.0), prev_price=1300.0) is False   # +15%
+    assert is_suspect(_q(1625.0), prev_price=1300.0) is True    # +25%
+    assert is_suspect(_q(1860.0), prev_price=1300.0) is True    # +43% (the real incident)
+
+
 def test_no_prev_price_only_checks_structure():
     assert is_suspect(_q(1300.0), prev_price=None) is False
     assert is_suspect(_q(0.0), prev_price=None) is True

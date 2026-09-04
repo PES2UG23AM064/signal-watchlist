@@ -3,6 +3,7 @@ import { api, getToken } from "./api.js";
 import Login from "./components/Login.jsx";
 import Digest from "./components/Digest.jsx";
 import Watchlist from "./components/Watchlist.jsx";
+import ModelPanel from "./components/ModelPanel.jsx";
 import { MarketPill } from "./components/Badges.jsx";
 
 const POLL_MS = 5000; // M1: client polling. SSE replaces this in M6 behind the same refresh seam.
@@ -55,6 +56,16 @@ export default function App() {
     await api.markAllSeen();
     await refresh();
   }
+  // Demo: re-create "you last looked 15 minutes ago" from the simulator's deterministic history.
+  async function handleRewind() {
+    try {
+      await api.rewind(15);
+      await refresh();
+    } catch (err) {
+      setError(err.message || "Rewind failed");
+    }
+  }
+  const simulated = items.some((i) => i.provenance?.is_simulated);
   function handleLogout() {
     api.logout();
     setAuthed(false);
@@ -98,6 +109,16 @@ export default function App() {
         )}
         <Digest changes={changes} onMarkAllSeen={handleMarkAll} />
         <Watchlist items={items} onAdd={handleAdd} onSeen={handleSeen} onRemove={handleRemove} />
+        {simulated && items.length > 0 && (
+          <button
+            onClick={handleRewind}
+            className="mt-4 w-full text-xs text-slate-500 hover:text-slate-800 py-2"
+            title="Simulated data: re-create your snapshots as of 15 minutes ago to see 'While you were away' on demand"
+          >
+            ⟲ Demo: pretend I last looked 15 minutes ago
+          </button>
+        )}
+        <ModelPanel />
       </main>
     </div>
   );

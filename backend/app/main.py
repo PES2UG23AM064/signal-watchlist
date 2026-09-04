@@ -12,12 +12,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import db, poller
+from . import db, poller, services
 from .config import settings
 from .market import market_status
 from .models import MarketStatusModel
 from .providers import get_provider
-from .routes import auth, changes, state, watchlist
+from .routes import auth, changes, dev, model, state, watchlist
 
 logging.basicConfig(level=logging.INFO)
 
@@ -26,6 +26,7 @@ logging.basicConfig(level=logging.INFO)
 async def lifespan(app: FastAPI):
     await db.connect()
     await db.run_migrations()
+    await services.sync_replay_profiles()  # anchor the simulator to REAL closes/sigmas before polling
 
     stop = asyncio.Event()
     task: asyncio.Task | None = None
@@ -55,6 +56,8 @@ app.include_router(auth.router)
 app.include_router(watchlist.router)
 app.include_router(changes.router)
 app.include_router(state.router)
+app.include_router(model.router)
+app.include_router(dev.router)
 
 
 @app.get("/market", response_model=MarketStatusModel, tags=["meta"])

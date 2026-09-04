@@ -9,10 +9,17 @@ function Row({ item, onSeen, onRemove }) {
     <div className="bg-white rounded-2xl border border-slate-100 p-4 flex items-center justify-between">
       <div className="min-w-0">
         <div className="font-semibold text-slate-900">{displaySymbol(item.symbol)}</div>
-        <div className="flex items-center gap-1.5 mt-1">
+        <div className="flex items-center gap-1.5 mt-1 flex-wrap">
           <FreshnessBadge provenance={item.provenance} />
           <SourceBadge provenance={item.provenance} />
         </div>
+        {item.signal && item.signal.reasons.length > 0 && (
+          <div className="flex flex-wrap gap-1 mt-1.5">
+            {item.signal.reasons.map((r) => (
+              <span key={r} className="text-[11px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-800">{r}</span>
+            ))}
+          </div>
+        )}
       </div>
       <div className="flex items-center gap-3">
         <div className="text-right">

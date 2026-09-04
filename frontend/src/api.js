@@ -56,6 +56,8 @@ export const api = {
     setToken(null);
   },
   getState: () => req("/state"), // market + watchlist + ranked changes in one round trip
+  getModel: () => req("/model", { auth: false }), // the backtest "receipts" (static, real candles)
+  rewind: (minutes = 15) => req(`/dev/rewind?minutes=${minutes}`, { method: "POST" }), // demo: as-of N min ago
   getMarket: () => req("/market", { auth: false }),
   getWatchlist: () => req("/watchlist"),
   addSymbol: (symbol) => req("/watchlist", { method: "POST", body: { symbol } }),
