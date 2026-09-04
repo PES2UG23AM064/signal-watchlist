@@ -26,7 +26,7 @@ function Tabs({ tab, onTab, className = "" }) {
   );
 }
 
-// "Asha" from a display name, else the part of the email before the @ — never the raw email.
+// Display name, else the part of the email before the @ — never the raw email.
 function greet(account) {
   if (!account) return "";
   if (account.display_name) return account.display_name;

@@ -8,7 +8,7 @@ _VALID = re.compile(r"^\^?[A-Z0-9&\-]{1,20}(\.[A-Z]{1,4})?$")
 
 
 class InvalidSymbol(ValueError):
-    """Not something that could be a ticker (empty, spaces, punctuation...). Mapped to HTTP 400."""
+    """Not something that could be a ticker. Mapped to HTTP 400 in main.py."""
 
 
 def normalize(raw: str) -> str:
@@ -19,6 +19,6 @@ def normalize(raw: str) -> str:
         raise InvalidSymbol(f"'{raw.strip()}' doesn't look like a ticker — try something like RELIANCE or TCS")
     if s.startswith("^"):  # index, e.g. ^NSEI
         return s
-    if "." not in s:  # default to NSE for the Groww/Indian-market demo
+    if "." not in s:  # default exchange is NSE
         s += ".NS"
     return s

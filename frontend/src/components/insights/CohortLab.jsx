@@ -1,11 +1,9 @@
 import { displaySymbol } from "../../format.js";
 import { Bar } from "../ui/Bits.jsx";
 
-// Where ML demonstrably works here: unsupervised co-movement cohorts. Structure + stability + a
-// counterfactual alert replay — counts and correlations, so none of it can come back "null".
+// Unsupervised co-movement cohorts: structure, stability and a counterfactual alert replay.
 
-// The correlation matrix, drawn. Cells that ended up in the same cohort are ringed, so you can see
-// the clustering agree with the colour rather than take our word for it.
+// Cells in the same cohort are ringed so the clustering can be checked against the correlation colour.
 function Heatmap({ symbols, matrix, cohorts }) {
   const cohortOf = new Map();
   (cohorts || []).forEach((g, i) => g.forEach((s) => cohortOf.set(s, i)));
@@ -13,8 +11,7 @@ function Heatmap({ symbols, matrix, cohorts }) {
 
   return (
     <div className="overflow-x-auto no-scrollbar -mx-1 px-1">
-      {/* Width scales with the universe: at 29 symbols this overflows a phone and scrolls sideways
-          rather than collapsing into an unreadable 10px grid. */}
+      {/* Width scales with the universe so a phone scrolls sideways instead of collapsing to an unreadable grid. */}
       <div
         className="grid gap-[2px]"
         style={{
@@ -86,8 +83,7 @@ export default function CohortLab({ report, userCohorts }) {
         </p>
       </header>
 
-      {/* Deliberately labelled as its own universe: this clustering runs on a different symbol set from
-          the predictive backtest, and showing both without saying so would read as a bug. */}
+      {/* Labelled as its own universe: this clustering runs on a different symbol set from the backtest. */}
       <div className="eyebrow mb-2">
         Cohort universe · <span className="num">{cm.symbols.length}</span> NSE large-caps ·{" "}
         <span className="num">{s.n_days}</span> days of returns

@@ -1,7 +1,6 @@
 import Drawer from "./ui/Drawer.jsx";
 
-// Every label this app puts on a number, explained in plain words. Tooltips carry the same text on a
-// laptop, but a phone has no hover — so the meaning has to be reachable somewhere you can tap.
+// Every label explained in plain words. Phones have no hover, so tooltip text must also be reachable by tap.
 
 function Item({ chip, children }) {
   return (

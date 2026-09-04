@@ -14,14 +14,13 @@ import { Toast } from "./components/ui/Bits.jsx";
 import { displaySymbol } from "./format.js";
 import { useTheme } from "./theme.js";
 
-// Transport: Server-Sent Events push a "quotes updated" tick after every poll cycle, and we refetch
-// /state on each tick. Polling stays as the FALLBACK (slower once SSE is connected) — same refresh seam.
+// SSE pushes a "quotes updated" tick after every poll cycle and we refetch /state on it. Polling
+// stays as the fallback, slower once SSE is connected.
 const POLL_MS = 5000;
 const POLL_MS_WITH_SSE = 30000;
 
 export default function App() {
-  // "checking" while we validate a remembered token against /auth/me — we never render a dashboard
-  // against a token the server hasn't confirmed.
+  // "checking" until /auth/me confirms a remembered token — the dashboard never renders on an unverified one.
   const [authState, setAuthState] = useState(getToken() ? "checking" : "out");
   const [account, setAccount] = useState(null);
   const [theme, toggleTheme] = useTheme();
@@ -34,14 +33,14 @@ export default function App() {
   const [loaded, setLoaded] = useState(false);
 
   const [tab, setTab] = useState("watchlist");
-  // The drawer holds a SYMBOL, never a row object: rows are re-derived from the live arrays on every
-  // render, so an open panel keeps updating with the 5s refresh and can't show a row that's gone.
+  // The drawer holds a symbol, not a row object: the row is re-derived from live data each render, so an
+  // open panel keeps updating and can't show a row that's gone.
   const [explainSymbol, setExplainSymbol] = useState(null);
   const [demoOpen, setDemoOpen] = useState(false);
   const [legendOpen, setLegendOpen] = useState(false);
   const [sse, setSse] = useState(false);
 
-  // Clears every trace of the session in this tab. Used by an explicit log out and by any 401.
+  // Used by an explicit log out and by any 401.
   const signOutLocally = useCallback(() => {
     try { localStorage.removeItem("token"); } catch { /* already gone */ }
     setAuthState("out");
@@ -56,13 +55,13 @@ export default function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const st = await api.getState(); // single round trip: market + watchlist + changes
+      const st = await api.getState();
       setItems(st.items);
       setChanges(st.changes);
       setCohorts(st.cohorts || []);
       setMarket(st.market);
-      // A good refresh clears a REFRESH failure only. An action's error ("symbol not found") must survive
-      // the next background tick, or the user never gets to read it.
+      // A good refresh clears only a refresh failure; an action's error must survive the next background
+      // tick or the user never gets to read it.
       setError((e) => (e && e.source === "refresh" ? null : e));
     } catch (err) {
       if (err.status === 401) signOutLocally();
@@ -72,7 +71,7 @@ export default function App() {
     }
   }, [signOutLocally]);
 
-  // A remembered token is only a claim until the server agrees. Validate once on load.
+  // A remembered token is only a claim until the server agrees.
   useEffect(() => {
     if (authState !== "checking") return;
     let alive = true;
@@ -90,7 +89,7 @@ export default function App() {
     return () => clearInterval(id);
   }, [authState, refresh, sse]);
 
-  // SSE: no user data on the stream, so no token in the URL; each tick just triggers an authed refetch.
+  // No user data on the stream, so no token in the URL; each tick just triggers an authed refetch.
   useEffect(() => {
     if (authState !== "in" || typeof EventSource === "undefined") return;
     let es;
@@ -110,8 +109,7 @@ export default function App() {
     return () => { es.close(); setSse(false); };
   }, [authState, refresh]);
 
-  // Any action that fails (offline, server restart, unknown symbol) surfaces as a toast instead of a
-  // dead click. Returns whether it worked, so callers can keep the user's input on failure.
+  // Failed actions surface as a toast. Returns whether it worked so callers can keep the user's input on failure.
   const guard = (fn) => async (...args) => {
     try {
       await fn(...args);
@@ -130,7 +128,7 @@ export default function App() {
   const handleMarkAll = guard(() => api.markAllSeen());
   const handleSetQuantity = guard((symbol, quantity) => api.setQuantity(symbol, quantity));
   const handleSnooze = guard((symbol, minutes) => api.snooze(symbol, minutes));
-  // Demo: re-create "you last looked 15 minutes ago" from the simulator's deterministic history.
+  // Demo: re-creates "you last looked 15 minutes ago" from the simulator's history.
   const handleRewind = guard(() => api.rewind(15));
 
   async function handleLogout() {
@@ -138,7 +136,7 @@ export default function App() {
     signOutLocally();
   }
 
-  // Prefer the digest row (it carries headline + peer z); fall back to the watchlist row.
+  // Prefer the digest row (it carries the headline and peer z); fall back to the watchlist row.
   const explainRow =
     (explainSymbol && changes.find((c) => c.symbol === explainSymbol)) ||
     (explainSymbol &&
@@ -150,8 +148,8 @@ export default function App() {
     if (explainSymbol && !explainRow) setExplainSymbol(null);
   }, [explainSymbol, explainRow]);
 
-  // Stable identities: the drawer's open/close effect keys on these, and a new closure every 5s poll
-  // would re-run it and yank focus out from under a keyboard user.
+  // Stable identities: the drawer's effect keys on these, and a new closure every poll would re-run it
+  // and yank focus from a keyboard user.
   const closeExplain = useCallback(() => setExplainSymbol(null), []);
   const closeDemo = useCallback(() => setDemoOpen(false), []);
   const closeLegend = useCallback(() => setLegendOpen(false), []);
@@ -172,10 +170,9 @@ export default function App() {
     return <AuthScreen onAuthed={(a) => { setAccount(a); setAuthState("in"); }} />;
   }
 
-  // Simulated data gates the demo tools: never offer to inject garbage into a live feed.
+  // Demo tools are only offered on simulated data, never against a live feed.
   const simulated = items.some((i) => i.provenance?.is_simulated);
-  // One source for the whole page -> the summary strip names it once. Mixed (the composite provider
-  // serving some symbols live and some from the fallback) -> every price carries its own source chip.
+  // One source for the page: the summary strip names it once. Mixed: every price carries its own source chip.
   const mixedSources = new Set(items.map((i) => !!i.provenance?.is_simulated)).size > 1;
   const loading = !loaded;
 

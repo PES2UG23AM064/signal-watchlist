@@ -1,16 +1,8 @@
-"""Composite provider: a REAL live feed (Yahoo) with a circuit breaker and an honest fallback (Replay).
+"""Composite provider: a live feed (Yahoo) behind a circuit breaker, with Replay as the fallback.
 
-Routing per batch/quote:
-  * market closed  -> fallback. Yahoo's quote is static outside NSE hours; the Replay simulator keeps the
-                      app alive and demonstrable, and the source badge says "simulated" — never a lie.
-  * breaker OPEN   -> fallback, without touching upstream (a failing dependency is not hammered).
-  * half-open      -> exactly ONE trial request is admitted after the cooldown; everyone else falls back
-                      until that trial succeeds (a recovering upstream must not get a thundering herd).
-  * otherwise      -> try the primary; on failure record it and fall back for THIS batch.
-
-Batches go to `primary.get_quotes` so the primary's own rate limiting and bounded concurrency apply
-(calling get_quote in a loop would silently bypass them). Each Quote carries the source that actually
-produced it, so provenance/is_simulated stay truthful whichever path served it.
+Falls back when the market is closed (Yahoo's quote is static then), when the breaker is open, or when
+the primary fails; half-open admits exactly one trial request so a recovering upstream is not herded.
+Each Quote carries the source that actually produced it, so provenance stays truthful either way.
 """
 from __future__ import annotations
 
@@ -38,7 +30,7 @@ class CircuitBreaker:
     _clock: object = field(default=time.time, repr=False)
 
     def is_open(self) -> bool:
-        """Pure: within the cooldown window after tripping."""
+        """Within the cooldown window after tripping."""
         return self.opened_at is not None and (self._clock() - self.opened_at) < self.cooldown_s
 
     def allow_request(self) -> bool:
@@ -62,7 +54,7 @@ class CircuitBreaker:
         self.total_failures += 1
         self.trial_in_flight = False
         if self.consecutive_failures >= self.failure_threshold:
-            self.opened_at = self._clock()  # (re)open — also re-arms the cooldown after a failed trial
+            self.opened_at = self._clock()  # (re)open; also re-arms the cooldown after a failed trial
 
     def state(self) -> str:
         if self.opened_at is None:
@@ -78,7 +70,7 @@ class CompositeProvider:
                  secondary: MarketDataProvider | None = None) -> None:
         self.primary = primary
         self.fallback = fallback
-        self.secondary = secondary        # optional second REAL feed: a cross-check, never served
+        self.secondary = secondary        # optional second real feed: a cross-check, never served
         self.breaker = breaker or CircuitBreaker()
         self._market_open = market_open or (lambda: market_status().is_open)
         self.last_route: str = "fallback"
@@ -107,7 +99,7 @@ class CompositeProvider:
         return q
 
     async def get_quotes(self, symbols: Sequence[str]) -> dict[str, Quote]:
-        """Batch path — delegates to primary.get_quotes so its rate limiter + bounded concurrency apply."""
+        """Delegates to primary.get_quotes so its rate limiter and bounded concurrency apply."""
         reason = self._route()
         if reason:
             self.last_route = reason
@@ -138,8 +130,7 @@ class CompositeProvider:
 
     # ---- secondary (cross-check) ----------------------------------------------------------------------
     async def get_secondary_quote(self, symbol: str) -> Quote | None:
-        """Best-effort cross-check quote from the secondary feed (only meaningful while the market is
-        open and a secondary is configured). Failures are swallowed — a cross-check must never hurt."""
+        """Best-effort cross-check quote from the secondary feed; failures are swallowed."""
         if self.secondary is None or not self._market_open():
             return None
         try:
@@ -149,7 +140,7 @@ class CompositeProvider:
             return None
 
     async def get_secondary_quotes(self, symbols: Sequence[str]) -> dict[str, Quote]:
-        """Concurrent best-effort cross-checks; symbols the secondary can't quote are simply absent."""
+        """Concurrent best-effort cross-checks; symbols the secondary cannot quote are absent."""
         if self.secondary is None or not self._market_open():
             return {}
         results = await asyncio.gather(*(self.get_secondary_quote(s) for s in symbols))

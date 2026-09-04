@@ -1,3 +1,2 @@
--- fetched_at was written but never read anywhere (provenance uses event_time — the exchange/sample time,
--- which is the only timestamp that matters for freshness and ordering). Dead columns are review bait.
+-- fetched_at was written but never read; freshness and ordering use event_time. (011 adds received_at with a reader.)
 alter table quotes drop column if exists fetched_at;

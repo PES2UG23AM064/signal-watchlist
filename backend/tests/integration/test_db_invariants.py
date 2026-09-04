@@ -1,5 +1,4 @@
-"""DB-backed integration tests for the integrity invariants the README claims. Run against a REAL
-Postgres (the dev Supabase) — skipped unless INTEGRATION=1 and DATABASE_URL is real:
+"""DB-backed integrity invariants. Skipped unless INTEGRATION=1 and DATABASE_URL is a real Postgres:
 
     INTEGRATION=1 ./.venv/Scripts/python.exe -m pytest tests/integration -q
 
@@ -56,15 +55,14 @@ def test_quarantine_and_roles_never_change_the_served_price():
                 t0 = datetime.now(UTC)
                 assert await quotes.record_quote(c, _q(100.0, t0), None) is True
                 prev = (await quotes.latest_quotes(c, [SYM]))[SYM]
-                # garbage, absurd jump, future timestamp -> all quarantined
+                # garbage, absurd jump, future timestamp: all quarantined
                 assert await quotes.record_quote(c, _q(0.0, t0 + timedelta(seconds=1)), prev) is False
                 assert await quotes.record_quote(c, _q(135.0, t0 + timedelta(seconds=2)), prev) is False
                 assert await quotes.record_quote(c, _q(100.0, t0 + timedelta(hours=1)), prev) is False
-                # a secondary-feed quote is stored but is not the served price
+                # a secondary-feed quote is stored but never served; its divergence surfaces as a dispute
                 await quotes.record_quote(c, _q(106.0, t0 + timedelta(seconds=3), "secondary-test"), None, role="secondary")
                 served = (await quotes.latest_quotes(c, [SYM]))[SYM]
                 assert served.price == 100.0 and served.source == "primary-test"
-                # ...and the divergence IS surfaced as a dispute
                 d = await quotes.disputes(c, [SYM], threshold_pct=2.0, window_s=600)
                 assert SYM in d and d[SYM]["secondary_price"] == 106.0 and d[SYM]["divergence_pct"] == 6.0
                 # a secondary within tolerance is not a dispute
@@ -82,9 +80,9 @@ def test_stale_reference_does_not_quarantine_correct_data_forever():
         try:
             async with db.pool().acquire() as c:
                 old = datetime.now(UTC) - timedelta(minutes=20)
-                await quotes.record_quote(c, _q(300.0, old), None)          # a wrong, STALE reference
+                await quotes.record_quote(c, _q(300.0, old), None)          # a wrong, stale reference
                 prev = (await quotes.latest_quotes(c, [SYM]))[SYM]
-                assert await quotes.record_quote(c, _q(200.0), prev) is True  # -33% vs a 20-min-old ref: accepted
+                assert await quotes.record_quote(c, _q(200.0), prev) is True  # -33% vs a 20-min-old ref is accepted
                 assert (await quotes.latest_quotes(c, [SYM]))[SYM].price == 200.0
         finally:
             await _teardown(db)
@@ -102,7 +100,7 @@ def test_read_state_watermark_is_monotonic():
                 await quotes.record_quote(c, _q(100.0, now), None)
                 lq_new = (await quotes.latest_quotes(c, [SYM]))[SYM]
                 await services._snapshot_upsert(c, uid, SYM, lq_new, None)
-                # an OLDER snapshot must not overwrite the newer baseline
+                # an older snapshot must not overwrite the newer baseline
                 lq_old = quotes.LatestQuote(symbol=SYM, price=90.0, volume=1, event_time=now - timedelta(hours=1), source="x")
                 await services._snapshot_upsert(c, uid, SYM, lq_old, None)
                 snap = await c.fetchrow("select watermark_event_time, snapshot_json from read_state where user_id=$1 and symbol=$2", uid, SYM)
@@ -113,9 +111,8 @@ def test_read_state_watermark_is_monotonic():
 
 
 def test_poller_leader_lock_is_exclusive_across_sessions():
-    """Session-level advisory lock semantics: one holder at a time, and a waiting session takes over the
-    moment the holder releases. Uses a SCRATCH key so the test never contends with a running deployment's
-    REAL leader lock — which would (correctly) refuse us; that case is reported, not asserted."""
+    """Session advisory lock: one holder at a time, and a waiter takes over the moment it is released.
+    Uses a scratch key so the test never contends with a live deployment's real leader lock."""
     async def body():
         from app.config import settings
         from app.poller import LEADER_LOCK_KEY
@@ -128,10 +125,10 @@ def test_poller_leader_lock_is_exclusive_across_sessions():
             await a.execute("select pg_advisory_unlock($1)", scratch)
             assert await b.fetchval("select pg_try_advisory_lock($1)", scratch) is True   # failover
             await b.execute("select pg_advisory_unlock($1)", scratch)
-            # The REAL key: if a deployed poller is live it holds this and we are refused — the whole point.
+            # The real key is only probed and reported: a live poller holding it is expected, not a failure.
             got_real = await a.fetchval("select pg_try_advisory_lock($1)", LEADER_LOCK_KEY)
             if got_real:
-                await a.execute("select pg_advisory_unlock($1)", LEADER_LOCK_KEY)  # no live leader; hand it back
+                await a.execute("select pg_advisory_unlock($1)", LEADER_LOCK_KEY)  # no live leader; release it
             print("real leader lock held by a running instance:", not got_real)
         finally:
             await a.close(); await b.close()

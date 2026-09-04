@@ -1,21 +1,9 @@
-"""Shared per-symbol poller — the ingestion backbone.
+"""Shared quote poller: each unique watched symbol is fetched once per cycle, however many users watch it.
 
-Runs as an in-process asyncio task inside FastAPI's lifespan (single Render container; the free tier
-has no separate worker type), but is written decoupled so it also runs standalone:  python -m app.poller
-
-Key property — FAN-IN: it polls each UNIQUE symbol once per cycle, no matter how many users watch it
-(RELIANCE watched by 500 users = one upstream fetch, not 500). That is the scalability story; a naive
-per-user-per-symbol poll is what it deliberately avoids.
-
-Leader election: exactly ONE poller writes even if several instances run — a Postgres session-level
-advisory lock held on a dedicated connection (LEADER_LOCK_KEY). The lock is re-verified immediately
-before each write, and the unique (symbol, event_time) constraint is the last line of defence if a leader
-loses its session mid-write. NOTE: session-level locks need a SESSION-mode connection (Supabase pooler on
-5432, not the transaction pooler on 6543, which recycles the physical session between transactions).
-
-Rate awareness: when the active provider is rate-limited (a live feed), the poll interval stretches so
-that symbols-per-cycle × cycles-per-minute never exceeds the provider's budget — the loop slows down
-honestly instead of wedging behind a token bucket. `/status` shows the effective interval.
+Runs in FastAPI's lifespan, or standalone via `python -m app.poller`.
+Exactly one instance writes: a Postgres session-level advisory lock on a dedicated connection, re-checked
+before each write. Session-level locks need a session-mode connection (Supabase 5432, not the 6543
+transaction pooler, which recycles the session between transactions).
 """
 from __future__ import annotations
 
@@ -34,24 +22,20 @@ from .providers import get_provider, replay_instance
 
 log = logging.getLogger("poller")
 
-# Observability: what the poller is doing right now (served by GET /status).
+# Served by GET /status.
 STATS: dict = {"last_poll_at": None, "last_cycle_seconds": None, "last_symbols": 0, "cycles": 0, "errors": 0,
                "role": "starting", "leader_since": None, "effective_interval_seconds": None,
                "skipped_writes_lost_lock": 0, "lease_seconds": None}
 
-LEADER_LOCK_KEY = 0x5157_4C53  # arbitrary constant: "signal-watchlist poller"
+LEADER_LOCK_KEY = 0x5157_4C53  # arbitrary constant
 
-# Zombie-leader protection. A session-level advisory lock is released when the SESSION ends — but a leader
-# whose process died without a clean shutdown (Render free tier spinning down, a laptop sleeping, a TCP
-# drop) can leave a half-dead session that Postgres won't notice for minutes. During that window no
-# follower can take over and every quote goes stale. So the lock session heartbeats every interval and
-# carries a server-side idle_session_timeout: if the leader goes silent for LEASE_S, Postgres itself kills
-# the session, the lock drops, and a follower is writing within one interval. Nothing else depends on it.
+# Zombie-leader lease. A leader that died without closing its session (TCP drop, host spin-down) can hold
+# the advisory lock for minutes. The lock session heartbeats every interval and carries a server-side
+# idle_session_timeout, so Postgres drops a silent leader's lock after LEASE_S and a follower takes over.
 LEASE_S = 60
 
-# Dev/demo: symbols whose upstream is "down" until the given unix time. The poller skips them, so their
-# latest quote AGES and the freshness badge flips fresh -> delayed -> stale — an honest simulation of an
-# upstream outage for one symbol (nothing is faked into the store).
+# Dev/demo: symbols whose upstream is "down" until the given unix time. The poller skips them so their
+# latest quote ages naturally (fresh -> delayed -> stale); nothing is faked into the store.
 _PAUSED: dict[str, float] = {}
 
 
@@ -74,8 +58,7 @@ def is_paused(symbol: str) -> bool:
 
 
 async def _unique_symbols(conn: asyncpg.Connection) -> list[str]:
-    """Every watched symbol once (fan-in) + the index, which the market-adjusted live feature needs.
-    Paused (simulated-outage) symbols are skipped so their data honestly goes stale."""
+    """Every watched symbol once, plus the index (needed for the market-adjusted move); paused ones skipped."""
     rows = await conn.fetch("select distinct symbol from watchlist_items")
     syms = [r["symbol"] for r in rows if not is_paused(r["symbol"])]
     if syms and INDEX_SYMBOL not in syms:
@@ -84,11 +67,8 @@ async def _unique_symbols(conn: asyncpg.Connection) -> list[str]:
 
 
 def _ensure_replay_profiles(bases: dict[str, baselines.Baselines]) -> None:
-    """The simulator must only ever quote from REAL anchors. A symbol can enter the watchlist through
-    ANOTHER process (a second API instance, a script against the shared DB) whose add_symbol never reached
-    this process's simulator — so the leader re-syncs profiles from the baselines it already loaded for the
-    cycle. This is exactly how an earlier deployment came to serve TATASTEEL at 3,185 when the real close
-    was 188: an unknown symbol was handed an invented level. Now a symbol has a real anchor or is omitted."""
+    """The simulator must only quote from real anchors. A symbol added through another process never
+    reached this process's simulator, so the leader re-syncs profiles from the cycle's baselines."""
     rp = replay_instance()
     if rp is None:
         return
@@ -98,21 +78,21 @@ def _ensure_replay_profiles(bases: dict[str, baselines.Baselines]) -> None:
 
 
 async def poll_once(pool: asyncpg.Pool, still_leader: Callable[[], bool] | None = None) -> int:
-    """One fan-in cycle: fetch every watched symbol once, append quotes in ONE round-trip.
+    """One cycle: fetch every watched symbol once, append quotes in one round-trip.
     `still_leader` is re-checked right before writing so a poller that lost its lock session mid-cycle
-    never writes. Returns #symbols polled (0 if the cycle was skipped)."""
+    never writes. Returns the number of symbols polled (0 if the cycle was skipped)."""
     provider = get_provider()
     async with pool.acquire() as conn:
         symbols = await _unique_symbols(conn)
         if not symbols:
             return 0
-        prev = await quotes.latest_quotes(conn, symbols)         # recent reference for tick-jump checks
+        prev = await quotes.latest_quotes(conn, symbols)         # reference for tick-jump checks
         bases = await baselines.get_baselines(conn, symbols)     # last real close bounds the stale case
     _ensure_replay_profiles(bases)
 
-    fetched = await provider.get_quotes(symbols)  # one shared upstream batch for all users
+    fetched = await provider.get_quotes(symbols)
 
-    # Optional second real feed: concurrent, best-effort cross-checks recorded as role='secondary'.
+    # Optional second real feed: best-effort cross-checks recorded as role='secondary'.
     secondary: dict[str, quotes.Quote] = {}
     get_secondary_batch = getattr(provider, "get_secondary_quotes", None)
     if get_secondary_batch is not None:
@@ -133,8 +113,7 @@ async def poll_once(pool: asyncpg.Pool, still_leader: Callable[[], bool] | None 
         log.warning("lost the leader lock during the cycle — skipping write (%d rows)", len(rows))
         return 0
 
-    # ONE round-trip for all writes: per-row INSERTs cost a network hop each (~200ms cross-region), which
-    # at 30+ symbols pushed a cycle past the poll interval. executemany pipelines the batch.
+    # One round-trip for all writes: per-row INSERTs pushed a cycle past the poll interval cross-region.
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.executemany(
@@ -146,7 +125,7 @@ async def poll_once(pool: asyncpg.Pool, still_leader: Callable[[], bool] | None 
 
 
 async def prune(pool: asyncpg.Pool) -> int:
-    """Bounded retention so the time-series never grows without limit."""
+    """Delete quotes older than the retention window."""
     async with pool.acquire() as conn:
         result = await conn.execute(
             "delete from quotes where event_time < now() - ($1 || ' hours')::interval",
@@ -159,8 +138,8 @@ async def prune(pool: asyncpg.Pool) -> int:
 
 
 def _min_interval_for(provider, n_symbols: int) -> float:
-    """Seconds per cycle needed to stay inside a rate-limited provider's budget (0 if unlimited or if a
-    composite is currently serving from its fallback and won't touch the live feed)."""
+    """Seconds per cycle needed to stay inside a rate-limited provider's budget (0 if unlimited, or if a
+    composite is serving from its fallback and will not touch the live feed)."""
     rate = getattr(provider, "rate_per_min", None)
     if rate is None and hasattr(provider, "primary"):
         if hasattr(provider, "serving_live") and not provider.serving_live():
@@ -176,20 +155,20 @@ async def _try_become_leader(lock_conn: asyncpg.Connection) -> bool:
 
 
 async def _open_lock_session() -> asyncpg.Connection:
-    """The dedicated lock session, with the lease: Postgres ends it after LEASE_S of silence."""
+    """Open the dedicated lock session; Postgres ends it after LEASE_S of silence."""
     conn = await asyncpg.connect(settings.database_url)
     try:
         await conn.execute(f"set idle_session_timeout = '{LEASE_S * 1000}'")
         STATS["lease_seconds"] = LEASE_S
-    except asyncpg.PostgresError as exc:  # pre-PG14 has no such GUC; the lock still works, minus the lease
+    except asyncpg.PostgresError as exc:  # pre-PG14 has no such GUC; the lock still works without the lease
         STATS["lease_seconds"] = None
         log.warning("idle_session_timeout unavailable (%s): a crashed leader's lock may linger", exc)
     return conn
 
 
 async def run(stop: asyncio.Event) -> None:
-    """Poll loop with leader election. Never lets one bad cycle kill the poller; prunes periodically.
-    A follower instance just re-checks the lock every interval and takes over if the leader disappears."""
+    """Poll loop with leader election. A follower re-checks the lock every interval and takes over
+    if the leader disappears; one bad cycle never stops the loop."""
     interval = settings.poll_interval_seconds
     prune_every = max(1, int(settings.prune_interval_seconds / interval))
     cycle = 0
@@ -203,8 +182,7 @@ async def run(stop: asyncio.Event) -> None:
         return is_leader and lock_conn is not None and not lock_conn.is_closed()
 
     async def heartbeat() -> None:
-        """Prove the lock session is alive (and keep its lease). A failure here means the session — and
-        with it the lock — is gone: drop leadership now rather than after a silent write."""
+        """Keep the lock session's lease alive; a failure means the lock is gone, so drop leadership now."""
         nonlocal is_leader, lock_conn
         if lock_conn is None or lock_conn.is_closed():
             return
@@ -221,7 +199,7 @@ async def run(stop: asyncio.Event) -> None:
             lock_conn = None
 
     async def sleep(seconds: float) -> None:
-        """Wait, but never let the lock session go quiet longer than one interval (see LEASE_S)."""
+        """Wait without letting the lock session go quiet longer than one interval (see LEASE_S)."""
         deadline = time.monotonic() + seconds
         while not stop.is_set():
             remaining = deadline - time.monotonic()
@@ -247,7 +225,6 @@ async def run(stop: asyncio.Event) -> None:
                     STATS["leader_since"] = datetime.now(UTC).isoformat()
                     log.info("poller: acquired leader lock — this instance writes")
             if not is_leader:
-                # Another instance holds the lock: do NOT poll (no double writes). Re-check next interval.
                 await sleep(interval)
                 continue
 
@@ -278,7 +255,7 @@ async def run(stop: asyncio.Event) -> None:
             STATS["errors"] = STATS.get("errors", 0) + 1
             log.exception("poll cycle failed; continuing")
             if lock_conn is not None and lock_conn.is_closed():
-                is_leader = False  # lost the session => lost the lock; re-elect next loop
+                is_leader = False  # lost the session, so lost the lock; re-elect next loop
         await sleep(wait)
 
     if lock_conn is not None and not lock_conn.is_closed():

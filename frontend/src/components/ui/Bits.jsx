@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { AlertCircle, X } from "lucide-react";
 
-// The handful of shapes used in more than one place. Anything used once stays inline where it's used.
+// Shapes used in more than one place. Anything used once stays inline where it's used.
 
-// A labelled number. The workhorse of the summary strip and the Insights tab.
 export function Stat({ label, value, sub, tone = "default", title }) {
   const tones = { default: "text-ink", up: "text-up", down: "text-down", muted: "text-ink-3" };
   return (
@@ -15,7 +14,6 @@ export function Stat({ label, value, sub, tone = "default", title }) {
   );
 }
 
-// Horizontal proportion bar — used for correlations, alert counts and calibration in Insights.
 export function Bar({ value, max = 1, color = "bg-brand", className = "" }) {
   const w = Math.max(0, Math.min(100, (value / max) * 100));
   return (
@@ -25,11 +23,9 @@ export function Bar({ value, max = 1, color = "bg-brand", className = "" }) {
   );
 }
 
-// Error surface: transient, out of the layout, dismissible. Replaces the old inline red block that
-// pushed content down every time a poll hiccuped.
 export function Toast({ message, onDismiss }) {
-  // The timer keys on the MESSAGE only. `onDismiss` is a fresh closure on every render, and the app
-  // re-renders on every poll — keyed on it, the 6s timer restarted every 5s and never fired.
+  // The timer keys on the message only: `onDismiss` is a new closure every render and the app re-renders
+  // every poll, so keying on it would restart the timer before it ever fired.
   const dismiss = useRef(onDismiss);
   dismiss.current = onDismiss;
   useEffect(() => {
@@ -54,7 +50,7 @@ export function Toast({ message, onDismiss }) {
   );
 }
 
-// First-paint placeholder, so the app never flashes an empty "all caught up" it will contradict.
+// First-paint placeholder, so the app never flashes an "all caught up" it will then contradict.
 export function SkeletonCard({ lines = 2 }) {
   return (
     <div className="card p-4">
@@ -69,7 +65,6 @@ export function SkeletonCard({ lines = 2 }) {
   );
 }
 
-// A collapsible section header used across the Insights tab.
 export function Disclosure({ title, subtitle, icon: Icon, defaultOpen = false, children }) {
   const [open, setOpen] = useState(defaultOpen);
   return (

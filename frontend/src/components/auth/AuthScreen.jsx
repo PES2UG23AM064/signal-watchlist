@@ -2,8 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
 import { api } from "../../api.js";
 
-// Sign in / create account. One screen, two modes, server-side validation surfaced inline on the
-// field it belongs to — a wrong password should never look like a broken app.
+// Sign in / create account. Server-side validation is surfaced inline on the field it belongs to.
 
 const MIN_PASSWORD = 8;
 
@@ -26,8 +25,7 @@ function strengthOf(pw) {
 function fieldFor(detail, status) {
   const d = String(detail || "").toLowerCase();
   if (status === 409) return "email";
-  // 401 and 429 are deliberately vague about WHICH credential is wrong, so they can't point at a
-  // field without implying we know more than we're saying.
+  // 401 and 429 are deliberately vague about which credential is wrong, so they can't point at a field.
   if (status === 401 || status === 429) return "form";
   if (d.includes("email")) return "email";
   if (d.includes("password")) return "password";
@@ -83,7 +81,6 @@ export default function AuthScreen({ onAuthed }) {
 
   return (
     <div className="min-h-screen lg:grid lg:grid-cols-[1.1fr_1fr]">
-      {/* The pitch: one calm line, not a feature list. */}
       <aside className="hidden lg:flex flex-col justify-center px-14 xl:px-24 bg-surface2 border-r border-line">
         <div className="flex items-center gap-2.5">
           <span className="w-3 h-3 rounded-full bg-brand" />

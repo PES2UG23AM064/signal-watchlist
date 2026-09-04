@@ -1,5 +1,3 @@
-// Small formatting helpers shared across the UI.
-
 export function inr(n) {
   return "₹" + Number(n).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }

@@ -1,8 +1,7 @@
-"""asyncpg connection pool + tiny migration runner.
+"""asyncpg connection pool and a tiny migration runner.
 
-We use asyncpg with explicit SQL (no ORM) on purpose: every query is visible and defensible,
-and the integrity-critical logic (monotonic watermark, stale-write rejection in later milestones)
-reads clearly as SQL inside an explicit transaction.
+Explicit SQL, no ORM: the integrity-critical logic (monotonic watermark, stale-write rejection)
+reads as SQL inside an explicit transaction.
 """
 from __future__ import annotations
 
@@ -20,10 +19,8 @@ MIGRATIONS_DIR = pathlib.Path(__file__).resolve().parent.parent / "migrations"
 async def connect() -> None:
     global _pool
     if _pool is None:
-        # Two warm connections so the first request doesn't pay a cross-region TLS handshake, but a HARD
-        # ceiling: Supabase's session pooler allows 15 clients per project in total. Each instance holds up
-        # to max_size + 1 (the poller's lock session), and the deployed API, a developer's local instance
-        # and a CI run all share that 15. 4 + 1 each keeps three of them under it.
+        # Supabase's session pooler allows 15 clients per project. Each instance holds max_size + 1
+        # (the poller's lock session), so 4 + 1 lets the deployed API, a local dev and CI coexist.
         _pool = await asyncpg.create_pool(settings.database_url, min_size=2, max_size=4)
 
 

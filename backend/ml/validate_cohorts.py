@@ -1,16 +1,14 @@
-"""Offline validation of watchlist cohorts on REAL candles -> app/model/cohort_report.json (dev-only).
+"""Offline validation of watchlist cohorts on real cached candles -> app/model/cohort_report.json (dev-only).
 
     ./.venv/Scripts/python.exe -m ml.validate_cohorts
 
-Three numbers, none of which can come back null (this is structure and counts, not a forecast):
+Reports three things:
   1. Structure: mean intra-cohort vs inter-cohort return correlation.
-  2. Out-of-sample stability: fit cohorts on the first half of the year, refit on the second half,
-     report agreement (adjusted Rand index + how many symbols kept their grouping).
-  3. Counterfactual alert replay: for every real trading day, count digest cards under the old rule
-     (one card per flagged symbol) vs the cohort rule (co-moving flagged members of one cohort collapse
-     into one card; "moving alone" members always stay their own card) — plus the INVARIANT that no
-     symbol moving alone was ever collapsed into a group.
-Uses cached real candles only. Never the Replay simulator.
+  2. Out-of-sample stability: fit on the first half of the days, refit on the second half, report
+     agreement (adjusted Rand index + how many symbols kept their grouping).
+  3. Counterfactual alert replay over every real trading day: digest cards under the old rule (one per
+     flagged symbol) vs the cohort rule (co-moving flagged members collapse into one card; "moving alone"
+     members always stay their own card), plus the invariant that no moving-alone symbol was ever collapsed.
 """
 from __future__ import annotations
 
@@ -61,7 +59,7 @@ def _structure(cands) -> dict:
 
 
 def _stability(cands) -> dict:
-    """Fit on first half of days vs second half; do symbols keep the same grouping?"""
+    """Fit on the first half of days vs the second half: do symbols keep the same grouping?"""
     days = sorted(set.intersection(*[{c.day for c in v} for v in cands.values()]))
     mid = days[len(days) // 2]
     first = {s: [c for c in v if c.day <= mid] for s, v in cands.items()}
@@ -69,7 +67,7 @@ def _stability(cands) -> dict:
     m1, m2 = cohorts.build(first, ), cohorts.build(second)
     symbols = sorted(cands)
     l1, l2 = _labels(m1, symbols), _labels(m2, symbols)
-    # a symbol "kept its grouping" if the set of co-members is identical in both halves
+    # a symbol kept its grouping if its set of co-members is identical in both halves
     kept = sum(1 for s in symbols
                if {x for g in m1.cohorts if s in g for x in g} == {x for g in m2.cohorts if s in g for x in g})
     return {"split_day": mid.isoformat(), "adjusted_rand_index": round(float(adjusted_rand_score(l1, l2)), 3),
@@ -81,7 +79,7 @@ def _stability(cands) -> dict:
 
 def _counterfactual(cands, index, model: cohorts.CohortModel) -> dict:
     """Replay every real day: old rule = one card per flagged symbol; cohort rule = co-moving flagged
-    members of a cohort collapse to one card, 'moving alone' always its own card."""
+    members of a cohort collapse to one card per direction, 'moving alone' always its own card."""
     idx_by_day = {c.day: c.close for c in index}
     aligned = {s: [c for c in v if c.day in idx_by_day] for s, v in cands.items()}
     days = sorted(set.intersection(*[{c.day for c in v} for v in aligned.values()]))
@@ -111,12 +109,11 @@ def _counterfactual(cands, index, model: cohorts.CohortModel) -> dict:
             pack = [s for s in g if s in flagged and s not in alone]
             if not pack:
                 continue
-            # same-direction co-movers collapse to one card per direction
             for sgn in (1.0, -1.0):
                 members = [s for s in pack if flagged[s] == sgn]
                 if members:
                     day_new += 1
-                    alone_hidden += sum(1 for s in members if s in alone)  # must stay 0 by construction
+                    alone_hidden += sum(1 for s in members if s in alone)  # 0 by construction; asserted in main
         old_cards += day_old; new_cards += day_new
         daily.append((days[t], day_old, day_new))
 

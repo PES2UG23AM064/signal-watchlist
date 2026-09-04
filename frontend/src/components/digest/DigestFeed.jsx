@@ -4,11 +4,9 @@ import { inr, pct, displaySymbol, timeAgo } from "../../format.js";
 import { ProvenanceChips, ExtraReasons, FreshnessBadge } from "../Badges.jsx";
 import { SkeletonCard } from "../ui/Bits.jsx";
 
-// Co-movement grouping is PRESENTATION ONLY: every symbol is still in `changes`; here we just fold
-// same-cohort, same-direction pack moves into one card, and always leave "moving alone" symbols out.
-// Only MEANINGFUL moves are cards or groups. Everything else that moved is still listed — as one quiet
-// line each under "also moved" — so nothing is hidden, but a 0.01% drift never gets a card, and two
-// stocks that both drifted 0.00% are never announced as a "sector move".
+// Grouping is presentation only: every symbol stays in `changes`. Meaningful same-cohort, same-direction
+// moves fold into one card; "moving alone" symbols never fold. Non-meaningful moves are still listed as
+// one quiet line each, so nothing is hidden but a 0.01% drift never gets a card.
 function groupChanges(changes) {
   const alone = changes.filter((c) => c.moving_alone);
   const quiet = changes.filter((c) => !c.moving_alone && !c.signal.is_meaningful);
@@ -29,7 +27,6 @@ function groupChanges(changes) {
   return { alone, groups, singles, quiet };
 }
 
-// The quiet rows: listed, ranked, one line each. Tap for the full breakdown like any card.
 function QuietList({ rows, onExplain }) {
   if (rows.length === 0) return null;
   return (
@@ -68,7 +65,7 @@ function median(xs) {
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
 
-// A pack move gets one card, not N. Expanding shows every member — grouping never hides a symbol.
+// A pack move gets one card; expanding shows every member, so grouping never hides a symbol.
 function GroupCard({ members, cohort, renderCard }) {
   const [expanded, setExpanded] = useState(false);
   const med = median(members.map((m) => m.change_since_seen.pct));
@@ -88,7 +85,6 @@ function GroupCard({ members, cohort, renderCard }) {
           <p className="text-sm text-ink-3 mt-1 truncate">
             {members.map((m) => displaySymbol(m.symbol)).join(" · ")}
           </p>
-          {/* The one fact that justifies folding them: how tightly they've moved together, measured. */}
           <span
             className="chip chip-cohort mt-2"
             title="Mean correlation of these symbols' daily returns over the past year, from real candles — no sector table. They tend to move as one, so this is the sector, not one stock's news."
@@ -128,15 +124,14 @@ export default function DigestFeed({ changes, cohorts, mixedSources, loading, on
       : c.signal.is_meaningful
       ? up ? "bg-up" : "bg-down"
       : "bg-surface2";
-    // The server appends "Diverging from X, …" / "Moving alone — …" as reasons. They become the ONE
-    // alone-chip (with the peer's name), and are not repeated as reason chips underneath.
+    // The server's "Diverging from X, …" / "Moving alone — …" reasons become the one alone-chip and are
+    // not repeated as reason chips underneath.
     const pairMatch = (c.signal.reasons || []).map((r) => /^Diverging from (\S+),/.exec(r)).find(Boolean);
     const divergingFrom = pairMatch ? pairMatch[1] : null;
     const cardReasons = (c.signal.reasons || []).filter((r) => !/^(Diverging from|Moving alone)/.test(r));
-    // ...unless the headline IS the alone-reason (nothing else fired): then the sentence says it, no chip.
+    // No chip when the headline itself is the alone-reason.
     const aloneChip = c.moving_alone && !/^(Diverging from|Moving alone)/.test(c.headline);
-    // The headline is deliberately plain English and shared across cards. The magnitude is what tells a
-    // 5σ move from a 2σ one at a glance — one number, no Greek; the full breakdown stays in "Why?".
+    // Headlines are shared plain English; the sigma chip is what tells a 5σ move from a 2σ one at a glance.
     const sigma = c.signal.explain?.sigma_move;
     const mins = Math.round((c.signal.explain?.elapsed_seconds || 0) / 60);
     return (
@@ -169,9 +164,7 @@ export default function DigestFeed({ changes, cohorts, mixedSources, loading, on
                 </span>
               )}
             </div>
-            {/* The headline is one lead reason in plain English. The numbers behind it live in "why?",
-                and a headline long enough to need three lines is clamped rather than allowed to shove
-                the card's actions off the fold. */}
+            {/* Clamped so a long headline can't push the card's actions off the fold. */}
             <p className="text-sm font-medium text-ink-2 mt-1 leading-snug line-clamp-3">{c.headline}</p>
             <ExtraReasons reasons={cardReasons} lead={c.headline} />
             {c.impact_inr != null && (
@@ -190,8 +183,6 @@ export default function DigestFeed({ changes, cohorts, mixedSources, loading, on
               </div>
             )}
           </div>
-          {/* The comparison IS the product: now, versus what you saw, and when you saw it. Every number
-              on this card — the %, the "× usual", the reasons — is measured from that snapshot. */}
           <div
             className="text-right shrink-0"
             title={`You last looked ${timeAgo(c.last_seen.event_time)}, when it was ${inr(c.last_seen.price)}. Everything on this card is measured from there.`}
@@ -208,8 +199,7 @@ export default function DigestFeed({ changes, cohorts, mixedSources, loading, on
         </div>
 
         <div className="flex items-end justify-between gap-2 mt-3">
-          {/* Freshness is per price and always here. The source is said once in the summary strip —
-              per card only when this page is actually serving from more than one source. */}
+          {/* Freshness is per price; the source is said once in the summary strip unless sources are mixed. */}
           <ProvenanceChips provenance={c.provenance} source={!!mixedSources} />
           <div className="flex items-center gap-0.5 shrink-0" onClick={(e) => e.stopPropagation()}>
             {c.snoozed_until ? (
@@ -252,7 +242,7 @@ export default function DigestFeed({ changes, cohorts, mixedSources, loading, on
           <h2 id="digest-heading" className="text-base font-semibold text-ink tracking-tight">
             While you were away
           </h2>
-          {/* The attention count lives in the summary strip; this line only says what THIS list did. */}
+          {/* The attention count lives in the summary strip, not here. */}
           {!loading && changes.length > 0 && (
             <p className="text-xs text-ink-3 mt-0.5">
               Ranked by how unusual, not by size

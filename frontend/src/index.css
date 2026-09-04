@@ -2,11 +2,8 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ---------------------------------------------------------------------------
-   Design tokens. Light and dark are the same components with a different set of
-   values — no component in this app hard-codes a colour.
-   Values are space-separated RGB channels so Tailwind can apply opacity to them.
---------------------------------------------------------------------------- */
+/* Design tokens: light and dark differ only in these values; no component hard-codes a colour.
+   Space-separated RGB channels so Tailwind can apply opacity to them. */
 
 :root {
   color-scheme: light;
@@ -99,7 +96,7 @@
     @apply bg-surface rounded-card border border-line shadow-card;
   }
 
-  /* --- Chips: one shape, colour carries the meaning ---------------------- */
+  /* --- Chips ------------------------------------------------------------- */
   .chip {
     @apply inline-flex items-center gap-1 text-2xs leading-none px-1.5 py-1 rounded-md font-medium whitespace-nowrap;
   }
@@ -134,7 +131,7 @@
     @apply bg-surface2 text-ink-3;
   }
 
-  /* --- Buttons: one primary, everything else recedes --------------------- */
+  /* --- Buttons ----------------------------------------------------------- */
   .btn {
     @apply inline-flex items-center justify-center gap-1.5 rounded-lg font-medium
            transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed;

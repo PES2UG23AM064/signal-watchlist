@@ -4,8 +4,7 @@ import { api } from "../../api.js";
 import { displaySymbol } from "../../format.js";
 import Drawer from "../ui/Drawer.jsx";
 
-// Demo-only: inject faults through the REAL ingestion path and watch the app refuse to lie.
-// Only reachable when the data is simulated — never offered against a live feed.
+// Demo-only: injects faults through the real ingestion path. Only reachable when the data is simulated.
 const KINDS = [
   ["garbage", "Price = 0", "Impossible price → quarantined; the served price doesn't move."],
   ["jump", "+35% tick", "Beyond NSE's 20% circuit band → quarantined as bad/conflicting data."],
@@ -19,7 +18,7 @@ export default function DemoDrawer({ open, onClose, symbols, onRewind, onDone })
   const [msg, setMsg] = useState(null);
   const [busy, setBusy] = useState(false);
 
-  // The selected symbol can disappear (removed from the watchlist) while the drawer is closed.
+  // The selected symbol can be removed from the watchlist while the drawer is closed.
   const active = symbols.includes(symbol) ? symbol : symbols[0] || "";
 
   async function fire(kind) {

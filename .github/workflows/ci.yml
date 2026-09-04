@@ -26,8 +26,8 @@ jobs:
         run: pytest tests -q --ignore=tests/integration
 
   integration:
-    # The integrity invariants the README claims — quarantine/roles/disputes, the stale-reference escape
-    # hatch, the monotonic watermark, leader-lock exclusivity — proven against a real Postgres on every push.
+    # DB-backed invariants (quarantine/roles/disputes, stale-reference handling, monotonic watermark,
+    # leader-lock exclusivity, account lifecycle) against a real Postgres.
     runs-on: ubuntu-latest
     services:
       postgres:

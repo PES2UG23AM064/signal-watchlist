@@ -1,5 +1,5 @@
--- M1 schema: identity, watchlist, per-user read state (the "what you last saw" snapshot).
--- Idempotent so it is safe to re-run.
+-- Base schema: identity, watchlist, per-user read state (the "what you last saw" snapshot).
+-- All migrations are idempotent: they re-run on every startup in filename order.
 
 create table if not exists users (
     id            uuid primary key default gen_random_uuid(),
@@ -19,9 +19,8 @@ create table if not exists watchlist_items (
 
 create index if not exists idx_watchlist_user on watchlist_items (user_id);
 
--- read_state is the crux of "since you last looked": we persist a SNAPSHOT of what the user
--- actually saw (price + the event_time it was as-of), not just a timestamp. The watermark is
--- monotonic (advanced only forward) so concurrent "mark seen" from two devices is safe.
+-- read_state persists a snapshot of what the user actually saw (price + its event_time), not just a
+-- timestamp. The watermark only advances forward, so concurrent "mark seen" from two devices is safe.
 create table if not exists read_state (
     user_id              uuid not null references users(id) on delete cascade,
     symbol               text not null,

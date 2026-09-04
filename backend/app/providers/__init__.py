@@ -1,10 +1,7 @@
 """Market data providers behind one interface.
 
-MARKET_PROVIDER selects the process-wide provider:
-  replay     (default) deterministic simulator — the reproducible demo backbone, labeled "simulated".
-  yahoo      live Yahoo quotes only (no fallback; for experiments).
-  composite  live Yahoo when NSE is open, with a circuit breaker and honest fallback to Replay on
-             failure / outside market hours — the "how it runs against a real feed" configuration.
+MARKET_PROVIDER selects the process-wide provider: replay (deterministic simulator, default),
+yahoo (live only, no fallback), or composite (live Yahoo while NSE is open, Replay otherwise).
 """
 from __future__ import annotations
 
@@ -38,8 +35,7 @@ def get_provider() -> MarketDataProvider:
 
 
 def replay_instance() -> ReplayProvider | None:
-    """The Replay simulator in play, if any (directly, or as a composite's fallback) — so real baselines
-    can anchor it and the demo rewind can use its deterministic history."""
+    """The Replay simulator in play, if any (directly, or as a composite's fallback)."""
     p = get_provider()
     if isinstance(p, ReplayProvider):
         return p

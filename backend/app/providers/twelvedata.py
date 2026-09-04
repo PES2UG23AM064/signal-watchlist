@@ -1,8 +1,6 @@
-"""Twelve Data — an optional SECOND real feed, used only as a cross-check (never served).
+"""Twelve Data: an optional second real feed, used only as a cross-check (never served).
 
-Free tier needs an API key (TWELVEDATA_API_KEY). NSE symbols are queried as e.g. symbol=RELIANCE,
-exchange=NSE. Indices are skipped (the cross-check is about stocks). Failures raise; the composite
-provider swallows them — a cross-check must never take the app down.
+Indices are skipped. Failures raise; the composite provider swallows them.
 """
 from __future__ import annotations
 

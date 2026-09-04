@@ -1,11 +1,9 @@
-"""End-to-end M2 smoke test against the real database.
+"""End-to-end smoke test against the real database (requires DATABASE_URL):
 
-Run once DATABASE_URL is set:
     ./.venv/Scripts/python.exe -m scripts.smoke
 
-Covers: migrate -> register -> add (immediate quote) -> poll -> list (no baseline) -> mark seen ->
-poll again -> list (baseline + change via the poller) -> changes feed -> monotonic-watermark guard ->
-sanity quarantine (garbage quote never served as truth) -> market status.
+Covers: migrate -> register -> add -> poll -> list -> mark seen -> poll again -> changes feed ->
+monotonic-watermark guard -> sanity quarantine -> market status.
 """
 from __future__ import annotations
 
@@ -31,7 +29,7 @@ async def main() -> None:
     for s in ["reliance", "TCS", "INFY.NS", "reliance"]:
         print("added:", await services.add_symbol(uid, s))
 
-    # Poller populates quotes (fan-in over unique symbols).
+    # The poller populates quotes, fanning in over unique symbols.
     n = await poller.poll_once(db.pool())
     print(f"poll_once polled {n} unique symbols")
 
@@ -81,7 +79,7 @@ async def main() -> None:
     assert after == before, "monotonic watermark guard FAILED (stale write moved it backward)"
     print("\nmonotonic watermark guard: OK (stale write rejected)")
 
-    # Sanity quarantine: a garbage quote (price=0) is stored but NEVER served as the latest truth.
+    # Sanity quarantine: a garbage quote (price=0) is stored but never served as the latest price.
     async with db.pool().acquire() as conn:
         prev_lq = (await quotes.latest_quotes(conn, ["RELIANCE.NS"]))["RELIANCE.NS"]
         good_before = prev_lq.price
@@ -92,7 +90,7 @@ async def main() -> None:
     assert good_after == good_before, "garbage quote must not become the served latest price"
     print(f"sanity quarantine: OK (price=0 rejected; latest still {good_after})")
 
-    # Market status is derived, not crashing.
+    # Market status resolves without error.
     ms = market_status()
     print(f"\nmarket status: {ms.label} - {ms.detail}")
 

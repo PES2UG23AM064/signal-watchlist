@@ -1,23 +1,18 @@
-"""Offline trainer: fit the 3-feature logistic regression on REAL daily candles and write two
-committed artifacts. Dev-only (scikit-learn lives in requirements-dev.txt; production never imports this).
+"""Offline backtest: fit a 3-feature logistic regression on real daily candles and write
+app/model/backtest_report.json. Dev-only (scikit-learn is in requirements-dev.txt; production never imports this).
 
     ./.venv/Scripts/python.exe -m ml.train_scorer
 
-Design (each choice is a Q&A answer):
-  * Panel = every (symbol, trading day), features from bars <= t only (app.scoring.features_for_bar,
-    the SAME function production uses). Training on all days, not just flagged events, is what makes the
-    sample size honest (~250 x N_symbols rows).
-  * Label (primary) = path-max follow-through: max over the next N bars of |close_u/close_t - 1| >= K*sigma_t.
-    "Did something keep happening" — an ATTENTION label, not a direction bet.
-  * Label (pre-registered secondary) = directional continuation. We EXPECT it to fail (~0.5 AUC) and we
-    report that: an efficient market should give no directional edge on 252 bars, and it's why the app
-    never tells you what to buy.
-  * Split = strictly by calendar time, first ~70% of days train / last ~30% test, with an N-day EMBARGO
-    dropped from the end of train so no train label window overlaps test. No shuffling (temporal leakage).
-  * Standardization uses TRAIN mean/std only; both are persisted so production standardizes identically.
-  * K is tuned on TRAIN ONLY to land the base rate in [0.30, 0.50]. Never tuned on test.
-  * The backtest NEVER reads symbol_baselines (full-sample => look-ahead); trailing stats are recomputed
-    per bar inside app.scoring.
+Method:
+  * Panel = every (symbol, trading day); features from bars <= t only, via app.scoring.features_for_bar,
+    the same function production uses. Training on all days (not just flagged events) keeps the sample honest.
+  * Primary label = path-max follow-through: max over the next N bars of |close_u/close_t - 1| >= K*sigma_t.
+    An attention label ("did something keep happening"), not a direction bet.
+  * Pre-registered secondary label = directional continuation, expected to sit at ~0.5 AUC and reported as such.
+  * Split strictly by calendar time (first ~70% of days train, rest test), with an N-day embargo dropped from
+    the end of train so no train label window overlaps test. No shuffling.
+  * Standardization uses train mean/std only. K is tuned on train only to land the base rate in [0.30, 0.50].
+  * symbol_baselines is never read (full-sample stats would be look-ahead); trailing stats are recomputed per bar.
 """
 from __future__ import annotations
 
@@ -33,7 +28,7 @@ from sklearn.metrics import brier_score_loss, roc_auc_score
 from app import db, scoring
 from app.baselines import INDEX_SYMBOL, load_candles
 
-N_FORWARD = 3                     # follow-through horizon, trading days ("the next couple of check-ins")
+N_FORWARD = 3                     # follow-through horizon in trading days
 K_CANDIDATES = (1.5, 2.0, 2.5, 3.0)
 TARGET_BASE_RATE = (0.30, 0.50)
 TRAIN_FRAC = 0.70
@@ -68,7 +63,7 @@ async def _load_panel_inputs() -> dict[str, tuple[list[date], np.ndarray, np.nda
 
 
 def _build_panel(inputs, k: float):
-    """Rows: (symbol, day, features[3], y_path, y_dir)."""
+    """Rows: (symbol, day, features[3], y_path, y_dir, y_vol)."""
     rows = []
     for s, (days, closes, vols, idx) in inputs.items():
         n = len(closes)
@@ -80,9 +75,8 @@ def _build_panel(inputs, k: float):
             y_path = int(np.max(np.abs(fwd)) >= k * f.sigma_used)
             end_move = closes[t + N_FORWARD] / closes[t] - 1.0
             y_dir = int(f.move_pct != 0 and np.sign(end_move) == np.sign(f.move_pct))
-            # Third pre-specified label: volatility clustering (the GARCH effect). Did realized variance
-            # over the next N days EXCEED what trailing vol predicts? Asks "is this stock entering an
-            # active period?", not "which way will it go".
+            # Third pre-specified label, volatility clustering: does realized variance over the next N days
+            # exceed what trailing vol predicts? ("entering an active period", not "which way").
             fwd_daily = closes[t + 1: t + 1 + N_FORWARD] / closes[t: t + N_FORWARD] - 1.0
             y_vol = int(np.sum(fwd_daily ** 2) > N_FORWARD * f.sigma_used ** 2)
             rows.append((s, days[t], f.vector(), y_path, y_dir, y_vol))
@@ -92,7 +86,7 @@ def _build_panel(inputs, k: float):
 def _time_split(rows):
     days = sorted({r[1] for r in rows})
     cut = days[int(len(days) * TRAIN_FRAC)]
-    embargo_cut = days[max(0, int(len(days) * TRAIN_FRAC) - N_FORWARD)]  # drop last N train days
+    embargo_cut = days[max(0, int(len(days) * TRAIN_FRAC) - N_FORWARD)]  # embargo: drop last N train days
     train = [r for r in rows if r[1] < embargo_cut]
     test = [r for r in rows if r[1] > cut]
     return train, test, cut
@@ -119,7 +113,7 @@ def main() -> None:
     if not inputs:
         raise SystemExit("no candle history in daily_candles — backfill symbols first")
 
-    # --- choose K on TRAIN only (base rate in target band); labels depend on K so rebuild per candidate
+    # Choose K on train only (base rate in target band); labels depend on K, so rebuild per candidate.
     chosen_k, panel = None, None
     for k in K_CANDIDATES:
         rows = _build_panel(inputs, k)
@@ -128,7 +122,7 @@ def main() -> None:
         if TARGET_BASE_RATE[0] <= br <= TARGET_BASE_RATE[1]:
             chosen_k, panel = k, rows
             break
-    if panel is None:  # fall back to the default and report it honestly
+    if panel is None:  # no candidate lands in band: fall back to the default K
         chosen_k, panel = 2.0, _build_panel(inputs, 2.0)
 
     train, test, cut = _time_split(panel)
@@ -137,16 +131,15 @@ def main() -> None:
     std = np.where(std > 0, std, 1.0)
     Ztr, Zte = (Xtr - mean) / std, (Xte - mean) / std
 
-    corr = np.corrcoef(Xtr, rowvar=False)  # collinearity check — the sign-flip defense
+    corr = np.corrcoef(Xtr, rowvar=False)  # collinearity check (coefficient sign flips)
 
     test_days = np.array([r[1] for r in test])
 
     def auc_ci95(y: np.ndarray, p: np.ndarray, n_boot: int = 2000, seed: int = 0) -> list[float]:
-        """BLOCK bootstrap: resample whole blocks of N_FORWARD consecutive trading DAYS (all symbols of
-        those days together), not individual rows. Rows are not independent here — every stock shares the
-        same market day (cross-sectional correlation) and adjacent days share overlapping label windows —
-        and a plain row bootstrap would pretend they are and report an interval that is too narrow. The
-        question is not "is the point estimate above 0.5" but "does the interval EXCLUDE 0.5"."""
+        """Block bootstrap: resample blocks of N_FORWARD consecutive trading days (all symbols of those
+        days together), not individual rows. Rows are not independent: stocks share the same market day
+        and adjacent days share overlapping label windows, so a row bootstrap would give an interval that
+        is too narrow."""
         rng = np.random.default_rng(seed)
         days = np.array(sorted(set(test_days)))
         blocks = [days[i: i + N_FORWARD] for i in range(0, len(days), N_FORWARD)]
@@ -164,9 +157,8 @@ def main() -> None:
     def verdict(ci: list[float]) -> str:
         return "no edge: 95% CI includes 0.5" if ci[0] <= 0.5 <= ci[1] else "edge: 95% CI excludes 0.5"
 
-    # Product bar for SHIPPING a predictive tag, fixed before looking at the numbers: statistically non-zero
-    # is not enough — a tag has to be right about twice as often as chance in its top decile to be worth a
-    # user's attention. Below that it is noise dressed as insight.
+    # Bar for shipping a predictive tag, fixed before looking at the numbers: a statistically non-zero AUC is
+    # not enough; the top decile must be right about twice as often as chance.
     MIN_USEFUL_LIFT = 2.0
 
     clf = LogisticRegression(C=1.0, max_iter=1000).fit(Ztr, ytr)
@@ -177,13 +169,13 @@ def main() -> None:
     cal = _calibration(p_te, yte)
     top = cal[-1]["realized_rate"]; lift = round(top / base, 2) if base > 0 else None
 
-    # Pre-registered secondary label: direction. Expected ~0.5 (no edge). Reported, not hidden.
+    # Pre-registered secondary label: direction (expected ~0.5, no edge).
     _, ydtr = _xy(train, 4); _, ydte = _xy(test, 4)
     clf_dir = LogisticRegression(C=1.0, max_iter=1000).fit(Ztr, ydtr)
     p_dir = clf_dir.predict_proba(Zte)[:, 1]
     auc_dir = float(roc_auc_score(ydte, p_dir)); ci_dir = auc_ci95(ydte, p_dir)
 
-    # Third pre-specified label: volatility clustering / "entering an active period".
+    # Third pre-specified label: volatility clustering.
     _, yvtr = _xy(train, 5); _, yvte = _xy(test, 5)
     clf_vol = LogisticRegression(C=1.0, max_iter=1000).fit(Ztr, yvtr)
     p_vol = clf_vol.predict_proba(Zte)[:, 1]
@@ -216,8 +208,7 @@ def main() -> None:
     }
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    # Nothing is written as a runtime model on purpose (see `conclusion`). If an older artifact is lying
-    # around from a previous run, remove it so the product can't quietly pick it up.
+    # No runtime model is written (see `conclusion`); remove any stale artifact so production cannot pick it up.
     if MODEL_PATH.exists():
         MODEL_PATH.unlink()
 

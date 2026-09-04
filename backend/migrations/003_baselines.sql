@@ -1,7 +1,5 @@
--- Slice 1 of the scoring engine: REAL daily-candle history + per-symbol baselines.
--- The candles are the raw material for (a) honest volatility/volume/52w baselines and (b) the
--- self-validating backtest (we run the exact scoring function over this real history). Cached in
--- Postgres so scoring survives Yahoo being down or rate-limited.
+-- Real daily-candle history + per-symbol baselines. Candles feed the volatility/volume/52w baselines
+-- and the backtest; they are cached here so scoring survives Yahoo being down or rate-limited.
 
 create table if not exists daily_candles (
     symbol  text not null,

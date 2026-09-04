@@ -1,20 +1,9 @@
-"""Watchlist co-movement cohorts — the ML that demonstrably works here (unsupervised, non-predictive).
+"""Watchlist co-movement cohorts: cluster a user's symbols by daily-return correlation.
 
-Indian retail watchlists are mostly correlated large-caps: on a red day everything is red and a naive
-digest screams N times — exactly when the user most needs triage. The most valuable sentence an
-attention product can produce is "this is the market/sector, not your stock" vs "this one is moving
-ALONE". So: cluster the user's OWN symbols by daily-RETURN correlation (never price levels — the classic
-spurious-correlation error) on a year of REAL candles, then:
-  * a cohort with >= 2 watched members moving together collapses into ONE group card;
-  * a symbol whose move is far from its cohort peers' (peer-residual z >= 2) is PROMOTED: "moving alone".
-
-Grouping changes PRESENTATION ONLY — every member keeps its own row and reasons inside the card; nothing
-is ever hidden (the same "rerank, never suppress" principle as the scoring engine; unit-tested).
-
-Runtime, not a committed artifact, on purpose: cohorts depend on THIS user's watchlist and a judge will
-add a symbol mid-demo. Average-linkage agglomerative clustering on n <= ~50 symbols is ~15 lines of
-numpy — every line defensible aloud — and O(n^3) is the right trade at this size.
-Correlations use only cached real candles, never the Replay simulator.
+Correlation is on returns, never price levels, and only on cached real candles (never Replay).
+Cohorts moving together collapse into one group card; a member far from its peers is "moving alone".
+Grouping changes presentation only: every member keeps its own row and reasons, nothing is hidden.
+Computed at runtime per watchlist; O(n^3) average-linkage clustering is fine at watchlist sizes.
 """
 from __future__ import annotations
 
@@ -25,9 +14,8 @@ import numpy as np
 
 from .providers.yahoo import Candle
 
-MIN_OVERLAP_DAYS = 120      # below this a symbol is forced to a singleton cohort (new listing, thin history)
-MERGE_THRESHOLD = 0.5       # merge cohorts while mean pairwise correlation >= this. NSE large-cap baseline
-                            # pairwise corr is ~0.3-0.4; 0.5 is where names genuinely move together.
+MIN_OVERLAP_DAYS = 120      # below this a symbol is a singleton cohort (new listing, thin history)
+MERGE_THRESHOLD = 0.5       # NSE large-cap baseline pairwise corr is ~0.3-0.4; 0.5 is real co-movement
 PEER_Z_FLAG = 2.0           # |peer-residual z| >= this => "moving alone"
 
 
@@ -37,15 +25,15 @@ class CohortModel:
     corr: np.ndarray                   # pairwise correlation of daily returns
     cohorts: list[list[str]]           # clusters (singletons included)
     cohort_of: dict[str, int]          # symbol -> cohort index
-    sigma_resid: dict[str, float]      # stdev of (own return - median peer return), daily; None-ish -> singleton
+    sigma_resid: dict[str, float]      # daily stdev of (own return - median peer return); absent for singletons
     n_days: int
 
 
 # --------------------------------------------------------------------------- returns & correlation
 
 def returns_matrix(candles_by_symbol: dict[str, list[Candle]]) -> tuple[list[str], np.ndarray, list[date]]:
-    """Align on COMMON trading days (holiday calendars differ) and return daily simple returns.
-    Shape (n_days - 1, n_symbols). Symbols with too little overlap are dropped by the caller."""
+    """Align on common trading days (holiday calendars differ) and return daily simple returns,
+    shape (n_days - 1, n_symbols)."""
     symbols = sorted(candles_by_symbol)
     if not symbols:
         return [], np.zeros((0, 0)), []
@@ -53,7 +41,6 @@ def returns_matrix(candles_by_symbol: dict[str, list[Candle]]) -> tuple[list[str
     common = sorted(set.intersection(*day_sets))
     if len(common) < 2:
         return symbols, np.zeros((0, len(symbols))), common
-    # Index each symbol's closes by day ONCE (a per-cell generator scan here was O(days x symbols x candles)).
     by_day = {s: {c.day: c.close for c in candles_by_symbol[s]} for s in symbols}
     closes = np.array([[by_day[s][d] for s in symbols] for d in common])
     rets = closes[1:] / closes[:-1] - 1.0
@@ -72,8 +59,8 @@ def corr_matrix(rets: np.ndarray) -> np.ndarray:
 # --------------------------------------------------------------------------- clustering
 
 def cluster(corr: np.ndarray, thresh: float = MERGE_THRESHOLD) -> list[list[int]]:
-    """Average-linkage agglomerative clustering: repeatedly merge the two groups with the highest MEAN
-    pairwise correlation while that mean is >= thresh. O(n^3); n is a watchlist, so that's fine."""
+    """Average-linkage agglomerative clustering: merge the two groups with the highest mean pairwise
+    correlation while that mean is >= thresh."""
     n = corr.shape[0]
     groups: list[list[int]] = [[i] for i in range(n)]
     while len(groups) > 1:
@@ -91,9 +78,9 @@ def cluster(corr: np.ndarray, thresh: float = MERGE_THRESHOLD) -> list[list[int]
 
 
 def build(candles_by_symbol: dict[str, list[Candle]], thresh: float = MERGE_THRESHOLD) -> CohortModel:
-    """Full pipeline over cached REAL candles. Symbols with < MIN_OVERLAP_DAYS of common history become
+    """Full pipeline over cached candles. Symbols with < MIN_OVERLAP_DAYS of common history become
     singletons rather than being clustered on thin evidence."""
-    # Drop thin-history symbols first so they can't shrink the common window for everyone else.
+    # Drop thin-history symbols first so they cannot shrink the common window for everyone else.
     ok = {s: c for s, c in candles_by_symbol.items() if len(c) >= MIN_OVERLAP_DAYS}
     thin = [s for s in candles_by_symbol if s not in ok]
     symbols, rets, days = returns_matrix(ok)
@@ -104,7 +91,7 @@ def build(candles_by_symbol: dict[str, list[Candle]], thresh: float = MERGE_THRE
     cohorts = [[symbols[i] for i in g] for g in groups] + [[s] for s in thin]
     cohort_of = {s: k for k, g in enumerate(cohorts) for s in g}
 
-    # sigma of the peer residual (own return - median of cohort peers' returns), per symbol.
+    # Per-symbol stdev of the peer residual (own return - median of cohort peers' returns).
     sigma_resid: dict[str, float] = {}
     idx = {s: i for i, s in enumerate(symbols)}
     for g in cohorts:
@@ -115,8 +102,7 @@ def build(candles_by_symbol: dict[str, list[Candle]], thresh: float = MERGE_THRE
             own = rets[:, idx[s]]
             peers = np.median(rets[:, [c for c in cols if c != idx[s]]], axis=1)
             sigma_resid[s] = float(np.std(own - peers, ddof=1))
-    # `symbols` MUST be the corr-aligned (sorted) list from returns_matrix, not input insertion order —
-    # callers index `corr` by position in this list. (Thin-history symbols are not in corr at all.)
+    # `symbols` must be the corr-aligned list from returns_matrix: callers index `corr` by position in it.
     return CohortModel(symbols=symbols, corr=corr, cohorts=cohorts, cohort_of=cohort_of,
                        sigma_resid=sigma_resid, n_days=max(0, len(days) - 1))
 
@@ -126,8 +112,8 @@ def build(candles_by_symbol: dict[str, list[Candle]], thresh: float = MERGE_THRE
 def peer_residuals(model: CohortModel, moves: dict[str, float], elapsed_seconds: float,
                    trading_day_s: float, min_elapsed_s: float) -> dict[str, tuple[float, float] | None]:
     """For each symbol with live move `moves[s]` (fraction), return (residual_move, residual_z) vs the
-    MEDIAN move of its cohort peers, z-scaled by sigma_resid * sqrt(elapsed). Singletons -> None
-    (caller falls back to the NIFTY-beta residual — clean degradation, one branch)."""
+    median move of its cohort peers, z-scaled by sigma_resid * sqrt(elapsed). Singletons -> None
+    (the caller falls back to the NIFTY-beta residual)."""
     elapsed_days = max(elapsed_seconds, min_elapsed_s) / trading_day_s
     out: dict[str, tuple[float, float] | None] = {}
     for g in model.cohorts:
@@ -139,7 +125,6 @@ def peer_residuals(model: CohortModel, moves: dict[str, float], elapsed_seconds:
                 out[s] = None
                 continue
             resid = float(moves[s] - float(np.median(peers)))
-            # Plain Python floats on purpose: these flow into Pydantic models / JSON, and numpy scalars
-            # (np.float64 -> np.bool_ on comparison) are not JSON-serializable.
+            # Plain Python floats: these flow into Pydantic/JSON and numpy scalars are not serializable.
             out[s] = (resid, float(resid / (sig * float(np.sqrt(elapsed_days)))))
     return out

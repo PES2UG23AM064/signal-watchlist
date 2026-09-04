@@ -1,15 +1,14 @@
 import { useEffect, useState } from "react";
-import { Check, Plus, Trash2 } from "lucide-react";
+import { Check, Loader2, Plus, Trash2 } from "lucide-react";
 import { inr, pct, displaySymbol } from "../../format.js";
 import { ProvenanceChips, ExtraReasons } from "../Badges.jsx";
 
-// "How much do you hold?" — optional; held symbols rank by rupees at stake.
+// Optional holding size; held symbols rank by rupees at stake.
 function QtyInput({ item, onSetQuantity }) {
   const [val, setVal] = useState(item.quantity ?? "");
   const [editing, setEditing] = useState(false);
   const id = `qty-${item.symbol}`;
-  // State follows you across devices: a quantity set on your phone must show up here on the next
-  // refresh — but never overwrite what you're typing right now.
+  // A quantity set on another device shows up on the next refresh, but never overwrites what's being typed.
   useEffect(() => {
     if (!editing) setVal(item.quantity ?? "");
   }, [item.quantity, editing]);
@@ -42,10 +41,9 @@ function QtyInput({ item, onSetQuantity }) {
   );
 }
 
-// The watchlist is the LIST — what you track, what it's at, what you hold. The digest on the left is the
-// only place reasons, chips and "why?" live: a symbol that surfaced is explained there, once. The one
-// exception is a symbol with a reason the digest can't show (price flat, volume unusual): it keeps its
-// reason line here so nothing is ever hidden.
+// Reasons and "why?" live in the digest, so a symbol that surfaced is explained once. The exception is a
+// symbol with a reason the digest can't show (e.g. flat price, unusual volume): it keeps its reason line
+// here so nothing is hidden.
 function Row({ item, inDigest, mixedSources, onSeen, onRemove, onSetQuantity, onExplain }) {
   const ch = item.change_since_seen;
   const up = ch && ch.direction === "up";
@@ -124,19 +122,23 @@ function Row({ item, inDigest, mixedSources, onSeen, onRemove, onSetQuantity, on
 
 export default function WatchlistPanel({ items, digestSymbols, mixedSources, loading, onAdd, onSeen, onRemove, onSetQuantity, onExplain }) {
   const [symbol, setSymbol] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [pending, setPending] = useState(0);
   const inDigest = new Set(digestSymbols || []);
 
+  // An add takes a second or more (it fetches a year of real candles). The box is freed immediately so
+  // the next symbol can be typed — a disabled submit button silently drops Enter, and users type faster
+  // than the network. Adds may overlap; the API is idempotent. A rejected symbol comes back into the box
+  // so it can be fixed, unless something else has been typed since.
   async function add(e) {
     e.preventDefault();
     const s = symbol.trim();
     if (!s) return;
-    setBusy(true);
+    setSymbol("");
+    setPending((n) => n + 1);
     try {
-      // Clear only on success — a rejected symbol keeps what you typed so you can fix it.
-      if (await onAdd(s)) setSymbol("");
+      if (!(await onAdd(s))) setSymbol((cur) => cur || s);
     } finally {
-      setBusy(false);
+      setPending((n) => n - 1);
     }
   }
 
@@ -160,8 +162,8 @@ export default function WatchlistPanel({ items, digestSymbols, mixedSources, loa
           autoComplete="off"
           className="field grow min-w-0"
         />
-        <button disabled={busy || !symbol.trim()} className="btn btn-primary btn-md shrink-0">
-          <Plus size={16} /> Add
+        <button disabled={!symbol.trim()} className="btn btn-primary btn-md shrink-0" title={pending ? `Adding ${pending}…` : "Add"}>
+          {pending ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />} Add
         </button>
       </form>
 

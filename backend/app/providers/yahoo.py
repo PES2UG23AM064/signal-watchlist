@@ -1,15 +1,8 @@
-"""Yahoo Finance provider — the REAL data source.
+"""Yahoo Finance provider: one unauthenticated chart endpoint serves both live quotes and daily history.
 
-Uses one unauthenticated chart endpoint (no API key) that returns, in a single call, the live quote
-(price, volume, exchange event-time) AND a full daily-candle history. Two roles:
-  * get_history(): backfills real 1y daily candles -> honest volatility/volume/52w/beta baselines and
-    the raw material for the self-validating backtest. Always used, regardless of the live provider.
-  * get_quote(): an opportunistic live quote path (Replay stays the deterministic demo backbone).
-
-Good-citizen plumbing for an unauthenticated endpoint: one keep-alive client, a token bucket
-(`rate_per_min`, which the poller reads to stretch its interval rather than wedge), and bounded
-concurrency. Failures raise YahooError; callers (composite/breaker, baselines) degrade — a flaky upstream
-must never take the app down.
+get_history() backfills the real candles behind every baseline regardless of the live provider.
+One keep-alive client, a token bucket (`rate_per_min`, read by the poller) and bounded concurrency.
+Failures raise YahooError; callers degrade rather than crash.
 """
 from __future__ import annotations
 
@@ -27,13 +20,13 @@ from .base import Quote
 _CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 _HEADERS = {"User-Agent": "Mozilla/5.0"}  # Yahoo rejects the default httpx UA
 _TIMEOUT = 15.0
-RATE_PER_MIN = 30        # be a good citizen on an unauthenticated endpoint
-MAX_CONCURRENCY = 4      # bounded fan-out: N symbols do not become N serialized round-trips, nor a burst
+RATE_PER_MIN = 30        # polite budget for an unauthenticated endpoint
+MAX_CONCURRENCY = 4      # bounded fan-out: neither N serialized round-trips nor a burst
 
 
 class _TokenBucket:
-    """Async token bucket: `rate` tokens per minute, burst up to `capacity`. Waiters sleep OUTSIDE the
-    lock, so one sleeper never serializes everyone else behind it."""
+    """Async token bucket: `rate` tokens per minute, burst up to `capacity`. Waiters sleep outside the
+    lock so one sleeper never serializes the others behind it."""
 
     def __init__(self, rate_per_min: float, capacity: int) -> None:
         self.rate = rate_per_min / 60.0
@@ -60,7 +53,7 @@ class YahooError(Exception):
 
 
 class SymbolNotFound(YahooError):
-    """The exchange has no such symbol (a definite 404, not an outage) — callers should refuse it."""
+    """The exchange has no such symbol (a definite 404, not an outage)."""
 
 
 @dataclass(frozen=True)
@@ -80,7 +73,7 @@ class YahooProvider:
     def __init__(self) -> None:
         self._bucket = _TokenBucket(RATE_PER_MIN, capacity=RATE_PER_MIN)
         self._sem = asyncio.Semaphore(MAX_CONCURRENCY)
-        self._client: httpx.AsyncClient | None = None  # one keep-alive client; created lazily in-loop
+        self._client: httpx.AsyncClient | None = None  # created lazily inside the event loop
 
     def _http(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -107,8 +100,7 @@ class YahooProvider:
         return result
 
     async def get_quote(self, symbol: str) -> Quote:
-        # The live fields live in `meta`; ask for the smallest payload that carries them (one daily bar),
-        # not 375 one-minute bars we'd throw away.
+        # The live fields are in `meta`; one daily bar is the smallest payload that carries them.
         r = await self._chart(symbol, "1d", "1d")
         m = r.get("meta", {})
         price = m.get("regularMarketPrice")
@@ -124,9 +116,7 @@ class YahooProvider:
         )
 
     async def get_quotes(self, symbols: Sequence[str]) -> dict[str, Quote]:
-        """Bounded concurrency + the token bucket: fast enough that a poll cycle doesn't fall behind the
-        interval as the watchlist grows, gentle enough not to get rate-limited. A failing symbol raises
-        from here so the caller (composite/breaker) can fall back for the batch."""
+        """Bounded-concurrency batch. A failing symbol raises so the caller can fall back for the batch."""
         async def one(s: str) -> tuple[str, Quote]:
             async with self._sem:
                 return s, await self.get_quote(s)

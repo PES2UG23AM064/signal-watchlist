@@ -6,8 +6,7 @@ import CohortLab from "../insights/CohortLab.jsx";
 import ModelReceipts from "../insights/ModelReceipts.jsx";
 import SystemHealth from "../insights/SystemHealth.jsx";
 
-// Customer-first. Three short answers to the three questions a real user actually has, then one
-// collapsed expander holding every piece of evidence for the people who want to audit us.
+// Three short answers for the user, then one collapsed expander holding the evidence.
 
 function Section({ icon: Icon, title, children }) {
   return (
@@ -28,7 +27,7 @@ export default function HowItWorks({ cohorts, items, market }) {
   const [status, setStatus] = useState(null);
   const [openEvidence, setOpenEvidence] = useState(false);
 
-  // The evidence endpoints are only fetched once someone opens the expander.
+  // The evidence endpoints are only fetched once the expander is opened.
   useEffect(() => {
     if (!openEvidence) return;
     let alive = true;
@@ -122,7 +121,6 @@ export default function HowItWorks({ cohorts, items, market }) {
           </p>
         </Section>
 
-        {/* The evidence layer. Collapsed by default — present for anyone who wants to audit the claims. */}
         <section className="card overflow-hidden">
           <button
             onClick={() => setOpenEvidence(!openEvidence)}

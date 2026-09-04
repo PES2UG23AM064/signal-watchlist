@@ -9,20 +9,19 @@ class Settings(BaseSettings):
 
     database_url: str
     cors_origins: str = "http://localhost:5173"
-    # Also allow this project's own Render deployments without hardcoding the exact URL (the frontend
-    # and API get separate onrender.com subdomains), and any local dev origin — `127.0.0.1:5173` must
-    # work exactly like `localhost:5173`, or a browser that picked one reads "Failed to fetch".
+    # Any onrender.com subdomain (frontend and API deploy separately) plus any local dev origin;
+    # 127.0.0.1 must work like localhost or the browser reads "Failed to fetch".
     cors_origin_regex: str = r"^(https://.*\.onrender\.com|http://(localhost|127\.0\.0\.1)(:\d+)?)$"
     market_provider: str = "replay"
     replay_seed: int = 42
 
-    # Optional SECOND real feed for cross-source reconciliation (Twelve Data; free key). Its quotes are a
-    # cross-check only — never served. Divergence beyond the threshold within the window => "disputed".
+    # Optional second real feed (Twelve Data) used only as a cross-check, never served.
+    # Divergence beyond the threshold within the window marks a quote "disputed".
     twelvedata_api_key: str | None = None
     dispute_threshold_pct: float = 2.0
     dispute_window_seconds: int = 120
 
-    # Dev/demo endpoints (e.g. POST /dev/rewind). Auth-scoped and Replay-only; on for the hackathon demo.
+    # Dev/demo endpoints (e.g. POST /dev/rewind): auth-scoped and Replay-only.
     enable_dev_endpoints: bool = True
 
     # Poller

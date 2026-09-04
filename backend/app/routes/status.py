@@ -1,6 +1,4 @@
-"""Observability: what the system is doing right now — provider route + breaker, poller lag, per-symbol
-data freshness, recent quarantines, simulated outages. Point at it during the demo; it's how you'd
-know the app was lying if it ever did."""
+"""Observability: provider route and breaker, poller state, per-symbol freshness, recent quarantines."""
 from __future__ import annotations
 
 from datetime import UTC, datetime

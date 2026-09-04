@@ -1,7 +1,6 @@
-"""FastAPI app: lifespan wires the DB pool + migrations + the in-process poller; routers expose the API.
+"""FastAPI app: lifespan wires the DB pool, migrations and the in-process poller; routers expose the API.
 
-The whole system (API + ingestion poller) deploys as ONE Render container: the poller is an asyncio
-task started here in lifespan, not a separate worker service.
+API and poller deploy as one container: the poller is an asyncio task started in lifespan.
 """
 from __future__ import annotations
 
@@ -28,7 +27,7 @@ logging.basicConfig(level=logging.INFO)
 async def lifespan(app: FastAPI):
     await db.connect()
     await db.run_migrations()
-    await services.sync_replay_profiles()  # anchor the simulator to REAL closes/sigmas before polling
+    await services.sync_replay_profiles()  # anchor the simulator to real closes/sigmas before polling
 
     stop = asyncio.Event()
     task: asyncio.Task | None = None
@@ -48,7 +47,7 @@ app = FastAPI(title="Signal Watchlist", version="0.2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
-    allow_origin_regex=settings.cors_origin_regex,  # this project's own *.onrender.com deploys
+    allow_origin_regex=settings.cors_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -56,14 +55,13 @@ app.add_middleware(
 
 @app.exception_handler(InvalidSymbol)
 async def _invalid_symbol(_: Request, exc: InvalidSymbol) -> JSONResponse:
-    """A symbol that can't be a ticker is the caller's mistake (400), never a 500 — whichever route it
-    arrives through (body or path)."""
+    """A symbol that cannot be a ticker is the caller's mistake (400), never a 500, on every route."""
     return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 
 app.include_router(auth.router)
 app.include_router(watchlist.router)
-app.include_router(state.router)   # the ONE digest surface: watchlist + ranked changes + cohorts
+app.include_router(state.router)   # the one digest surface: watchlist + ranked changes + cohorts
 app.include_router(model.router)
 app.include_router(dev.router)
 app.include_router(status.router)

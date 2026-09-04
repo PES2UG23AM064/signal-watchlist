@@ -1,16 +1,9 @@
-"""Watchlist + change-since-last-seen + the meaningfulness signal.
+"""Watchlist, change-since-last-seen, and the meaningfulness signal.
 
-Reads serve quotes PERSISTED by the shared poller (fan-in: one upstream poll per symbol, many readers).
-For each watched symbol with a snapshot AND real baselines we compute the live signal via app.scoring —
-the SAME feature definitions the backtest ran — and attach plain-English reasons, a descriptive
-unusualness rank, the numbers behind it (explainability), co-movement cohort context, and — if the user
-told us what they hold — the rupee impact.
-
-Integrity notes:
-  * mark_seen's monotonic watermark: the snapshot only ever advances forward, so a stale or concurrent
-    "mark seen" (e.g. a second device) can never move a user's baseline backward.
-  * We never hold a pooled DB connection across an upstream network fetch.
-  * Nothing gates visibility: every moved symbol still renders; flags come from thresholds.
+Reads serve quotes persisted by the shared poller. mark_seen's watermark is monotonic, so a stale or
+concurrent "mark seen" (a second device) can never move a user's baseline backward.
+A pooled DB connection is never held across an upstream network fetch.
+Every moved symbol is always listed; flags and grouping rerank, never suppress.
 """
 from __future__ import annotations
 
@@ -47,7 +40,7 @@ log = logging.getLogger("services")
 QUARANTINE_WINDOW_S = 300  # "bad ticks rejected recently" = last 5 minutes
 
 
-FLAT_PCT = 0.01  # below one basis point since you looked, a symbol has not "moved" — a paisa tick is not news
+FLAT_PCT = 0.01  # below one basis point a symbol has not "moved"; a paisa tick is not news
 
 
 def compute_change(seen_price: float, current_price: float) -> Change:
@@ -68,8 +61,7 @@ def _provenance(lq: LatestQuote | None, now: datetime, quarantined: int = 0) -> 
 
 
 def _snap_time(snap: dict) -> datetime | None:
-    """A snapshot we wrote ourselves — but a malformed row must degrade to 'no snapshot for this symbol',
-    never 500 the whole digest."""
+    """A malformed snapshot row degrades to 'no snapshot', never a 500 for the whole digest."""
     try:
         return datetime.fromisoformat(snap["event_time"])
     except (KeyError, TypeError, ValueError):
@@ -80,16 +72,14 @@ def _snap_time(snap: dict) -> datetime | None:
 # --------------------------------------------------------------------------- replay <- real baselines
 
 def _sync_replay_profile(b: Baselines) -> None:
-    """Anchor the simulator (direct, or a composite's fallback) to the stock's REAL last close and size its
-    events in the REAL sigma."""
+    """Anchor the simulator to the stock's real last close and size its events in the real sigma."""
     rp = replay_instance()
     if rp is not None:
         rp.set_profile(b.symbol, anchor=b.last_close, sigma_daily=b.ret_stdev_daily, avg_vol=b.avg_volume_20d)
 
 
 async def _sync_replay_groups(conn: asyncpg.Connection) -> None:
-    """Tell the simulator which watched symbols the REAL candles say move together, so its 'sector days'
-    hit the same packs the app's cohort cards are built from (nothing is invented: same model, same data)."""
+    """Give the simulator the same co-movement packs the cohort cards are built from."""
     rp = replay_instance()
     if rp is None:
         return
@@ -99,7 +89,7 @@ async def _sync_replay_groups(conn: asyncpg.Connection) -> None:
 
 
 async def sync_replay_profiles() -> None:
-    """On startup: give the simulator real anchors/sigmas for everything watched (+ the index), and its packs."""
+    """Startup: real anchors/sigmas for everything watched (plus the index), and the packs."""
     async with db.pool().acquire() as conn:
         syms = [r["symbol"] for r in await conn.fetch("select distinct symbol from watchlist_items")]
         bs = await baselines.get_baselines(conn, syms + [INDEX_SYMBOL])
@@ -111,9 +101,8 @@ async def sync_replay_profiles() -> None:
 # --------------------------------------------------------------------------- quotes bootstrap
 
 async def _ensure_quote(symbol: str) -> None:
-    """Guarantee a FRESH quote after add/seen without waiting a poll cycle — reusing an existing fresh one
-    (fan-in) and NEVER fetching while holding a pooled connection. A symbol whose upstream is (simulated)
-    down is left alone so its data honestly ages."""
+    """Ensure a fresh quote after add/seen without waiting a poll cycle. A paused (simulated-outage)
+    symbol is left alone so its data ages."""
     if poller.is_paused(symbol):
         return
     now = datetime.now(UTC)
@@ -139,12 +128,12 @@ class UnknownSymbol(Exception):
 
 
 class SymbolUnavailable(Exception):
-    """We could not get a price for this symbol right now (upstream down) and won't add a dead row."""
+    """No price is obtainable right now (upstream down); a dead row is not added."""
 
 
 async def add_symbol(user_id: str, raw_symbol: str) -> str:
     symbol = normalize(raw_symbol)
-    # Validate BEFORE inserting: a typo must not become a permanent "no data" row on the list.
+    # Validate before inserting: a typo must not become a permanent "no data" row.
     try:
         b = await baselines.ensure_baselines(symbol)
     except SymbolNotFound as e:
@@ -152,7 +141,7 @@ async def add_symbol(user_id: str, raw_symbol: str) -> str:
     if b is None:
         rp = replay_instance()
         if rp is not None and not rp.can_quote(symbol):
-            raise SymbolUnavailable(symbol)   # no real anchor and Yahoo is down: we won't invent a price
+            raise SymbolUnavailable(symbol)   # no real anchor and Yahoo is down: do not invent a price
     async with db.pool().acquire() as conn:
         await conn.execute(
             "insert into watchlist_items (user_id, symbol) values ($1, $2) on conflict (user_id, symbol) do nothing",
@@ -160,20 +149,16 @@ async def add_symbol(user_id: str, raw_symbol: str) -> str:
         )
     if b is not None:
         _sync_replay_profile(b)
-    # The symbol and the index need a fresh quote before the snapshot; they are independent fetches.
     await asyncio.gather(_ensure_quote(symbol), _ensure_quote(INDEX_SYMBOL))
-    # Adding a symbol IS looking at it: the price on screen at this moment becomes the first baseline, so
-    # "what changed since I last looked" works from the first return visit — no separate "Seen" needed.
-    # Idempotent re-adds go through the monotonic guard, so they can never move an existing baseline back.
+    # Adding a symbol counts as looking at it: the current price becomes the first baseline.
+    # Re-adds go through the monotonic guard, so they never move an existing baseline back.
     async with db.pool().acquire() as conn:
         latest = await quotes.latest_quotes(conn, [symbol, INDEX_SYMBOL])
         if symbol in latest:
             idx = latest[INDEX_SYMBOL].price if INDEX_SYMBOL in latest else None
             await _snapshot_upsert(conn, user_id, symbol, latest[symbol], idx)
     if b is not None:
-        # A new symbol may join (or form) a simulator pack. That re-clusters every watched symbol's candles —
-        # the slowest thing in this path and nothing the caller is waiting on. It runs after we respond; a
-        # failure there is logged, never surfaced as a failed add.
+        # Re-clustering every watched symbol is the slowest step here and nothing the caller waits on.
         _background(_resync_replay_groups(), "replay pack re-sync")
     return symbol
 
@@ -199,7 +184,7 @@ async def _resync_replay_groups() -> None:
 
 
 async def remove_symbol(user_id: str, symbol: str) -> bool:
-    """Remove a symbol and its snapshot. False if it wasn't on the list."""
+    """Remove a symbol and its snapshot. False if it was not on the list."""
     symbol = normalize(symbol)
     async with db.pool().acquire() as conn:
         status = await conn.execute("delete from watchlist_items where user_id=$1 and symbol=$2", user_id, symbol)
@@ -208,12 +193,12 @@ async def remove_symbol(user_id: str, symbol: str) -> bool:
 
 
 def _updated(status: str) -> bool:
-    """asyncpg returns e.g. 'UPDATE 1' — False means the row wasn't the caller's (route -> 404)."""
+    """asyncpg returns e.g. 'UPDATE 1'; False means no row matched (route -> 404)."""
     return not status.endswith(" 0")
 
 
 async def set_quantity(user_id: str, symbol: str, quantity: float | None) -> bool:
-    """Shares held (validated >= 0 at the API edge). Zero means "I don't hold it": same as clearing."""
+    """Shares held (validated >= 0 at the API edge); zero is the same as clearing."""
     symbol = normalize(symbol)
     if quantity is not None and quantity <= 0:
         quantity = None
@@ -244,11 +229,10 @@ async def _read_state(conn: asyncpg.Connection, user_id: str) -> dict[str, dict]
 
 
 async def _quarantined_recent(conn: asyncpg.Connection, symbols: list[str]) -> dict[str, int]:
-    """Bad ticks rejected recently, per symbol — makes the quarantine VISIBLE rather than silent."""
+    """Bad ticks rejected recently, per symbol."""
     if not symbols:
         return {}
-    # Window on received_at (when WE received it), not event_time: a future-dated bad tick has an
-    # event_time an hour ahead and would otherwise read as "recent" until the clock catches up.
+    # Window on received_at, not event_time: a future-dated bad tick would otherwise read as "recent".
     rows = await conn.fetch(
         "select symbol, count(*) as n from quotes where is_suspect and symbol = any($1::text[]) "
         "and received_at > now() - make_interval(secs => $2) group by symbol", symbols, float(QUARANTINE_WINDOW_S))
@@ -257,16 +241,14 @@ async def _quarantined_recent(conn: asyncpg.Connection, symbols: list[str]) -> d
 
 # --------------------------------------------------------------------------- the signal
 
-PEAK_FLAG_SIGMA = 2.0         # an excursion this large (in sigma) is reported even if the endpoint came back
-PEAK_RETRACE_MAX_SIGMA = 1.0  # ...and "retraced" means the endpoint ended within this much
-PATH_BONUS_CAP = 3.0          # a retraced spike ranks like an event, but a wild wick can't dominate the digest
+PEAK_FLAG_SIGMA = 2.0         # an excursion this large (in sigma) is reported even if the price came back
+PEAK_RETRACE_MAX_SIGMA = 1.0  # "retraced" means the endpoint ended within this much
+PATH_BONUS_CAP = 3.0          # a retraced spike ranks like an event, but a wild wick cannot dominate
 
 
 async def _peaks_since(conn: asyncpg.Connection, seen: dict[str, dict]) -> dict[str, tuple[float, float]]:
-    """(max, min) served price per symbol since the user's snapshot time — from the quote ring, capped by
-    the retention window. ONE round-trip for all symbols: the per-symbol snapshot times are passed as
-    parallel arrays and joined via unnest (a per-symbol query was an N+1 that made /state take seconds
-    at 30 symbols when the DB is in another region). Uses the (symbol, event_time) index."""
+    """(max, min) served price per symbol since the user's snapshot time, bounded by quote retention.
+    One round-trip for all symbols: snapshot times are passed as parallel arrays and joined via unnest."""
     if not seen:
         return {}
     syms = list(seen)
@@ -301,8 +283,8 @@ def _build_signal(lq: LatestQuote, snap: dict, b: Baselines, idx_now: float | No
         return None
     reasons = scoring.flags_and_reasons(f)
 
-    # Path since you looked: the endpoint diff misses "+3% then back to flat". Report the excursion, and
-    # flag it when the path was a >=2-sigma event that the endpoint (<1 sigma) would have hidden.
+    # The endpoint diff misses "+3% then back to flat": report the excursion, and flag it when the
+    # path was a >= 2-sigma event that the endpoint (< 1 sigma) would have hidden.
     peak_pct = trough_pct = None
     path_note = None
     path_bonus = 0.0
@@ -317,7 +299,7 @@ def _build_signal(lq: LatestQuote, snap: dict, b: Baselines, idx_now: float | No
             ext = peak_pct if spiked else trough_pct
             reasons.append("Spiked, then came most of the way back" if spiked else "Dropped, then came most of the way back")
             path_note = f"{'spiked' if spiked else 'dropped'} {ext:+.1f}% then retraced ({excursion / sigma_eff:.1f}σ path move)"
-            path_bonus = min(excursion / sigma_eff, PATH_BONUS_CAP)   # the path WAS the event; rank it like one
+            path_bonus = min(excursion / sigma_eff, PATH_BONUS_CAP)   # the path was the event; rank it like one
 
     return Signal(
         reasons=reasons,
@@ -334,23 +316,20 @@ def _build_signal(lq: LatestQuote, snap: dict, b: Baselines, idx_now: float | No
 
 
 async def _q(fn, *args):
-    """Run one read on its own pooled connection — lets independent reads proceed concurrently."""
+    """Run one read on its own pooled connection so independent reads proceed concurrently."""
     async with db.pool().acquire() as conn:
         return await fn(conn, *args)
 
 
 async def list_watchlist(user_id: str) -> list[WatchRow]:
-    """Two waves of CONCURRENT reads instead of eight sequential ones. Each read is independent within a
-    wave, so wall time is ~one round-trip per wave — which matters when the database is in another
-    region (~200ms per hop turned a 30-symbol /state into seconds). Pool max_size covers the fan-out."""
+    """Two waves of concurrent reads instead of eight sequential ones; wall time is about one
+    round-trip per wave, which matters when the database is in another region."""
     now = datetime.now(UTC)
-    # Wave 1: what does the user watch, what did they last see, what's snoozed.
     holdings, seen, snoozes = await asyncio.gather(
         _q(_holdings, user_id), _q(_read_state, user_id), _q(_snoozes, user_id))
     symbols = list(holdings)
     if not symbols:
         return []
-    # Wave 2: everything keyed by those symbols.
     latest, bases, quarantined, peaks, disputed = await asyncio.gather(
         _q(quotes.latest_quotes, symbols + [INDEX_SYMBOL]),
         _q(baselines.get_baselines, symbols),
@@ -392,7 +371,7 @@ async def _snoozes(conn: asyncpg.Connection, user_id: str) -> dict[str, datetime
 
 
 async def snooze(user_id: str, symbol: str, minutes: int | None) -> bool:
-    """Hold a symbol out of 'needs your attention' until then (None clears). It stays listed — nothing hidden."""
+    """Hold a symbol out of 'needs your attention' until then (None clears); it stays listed."""
     symbol = normalize(symbol)
     until = (datetime.now(UTC) + timedelta(minutes=minutes)) if minutes else None
     async with db.pool().acquire() as conn:
@@ -423,8 +402,7 @@ async def _snapshot_upsert(conn: asyncpg.Connection, user_id: str, symbol: str, 
 
 async def force_snapshot(conn: asyncpg.Connection, user_id: str, symbol: str, price: float,
                          event_time: datetime, idx_price: float | None) -> None:
-    """DEV/DEMO ONLY: write a snapshot WITHOUT the monotonic guard (it moves the baseline backward on
-    purpose, to re-create 'as of N minutes ago'). Never used by the normal mark-seen path."""
+    """Dev/demo only: write a snapshot without the monotonic guard, to re-create 'as of N minutes ago'."""
     snapshot = json.dumps({"price": price, "event_time": event_time.isoformat(),
                            "source": "replay", "index_price": idx_price})
     await conn.execute(
@@ -441,7 +419,7 @@ async def force_snapshot(conn: asyncpg.Connection, user_id: str, symbol: str, pr
 
 async def mark_seen(user_id: str, symbol: str) -> bool:
     """Freeze the quote the user is currently seeing (and the index level) as their baseline.
-    False if the symbol isn't on their list — a snapshot for something you don't watch is an orphan."""
+    False if the symbol is not on their list."""
     symbol = normalize(symbol)
     async with db.pool().acquire() as conn:
         watched = await conn.fetchval("select 1 from watchlist_items where user_id=$1 and symbol=$2", user_id, symbol)
@@ -458,7 +436,7 @@ async def mark_seen(user_id: str, symbol: str) -> bool:
 
 async def mark_all_seen(user_id: str) -> None:
     async with db.pool().acquire() as conn:
-        async with conn.transaction():  # all-or-nothing
+        async with conn.transaction():
             symbols = await _symbols_for(conn, user_id)
             latest = await quotes.latest_quotes(conn, symbols + [INDEX_SYMBOL])
             idx = latest[INDEX_SYMBOL].price if INDEX_SYMBOL in latest else None
@@ -470,17 +448,17 @@ async def mark_all_seen(user_id: str) -> None:
 # --------------------------------------------------------------------------- co-movement cohorts
 
 _COHORT_CACHE: dict[frozenset, tuple[float, cohorts.CohortModel | None]] = {}
-COHORT_TTL_S = 3600         # cohorts change when the watchlist changes (key) or daily as candles refresh
-COHORT_CACHE_MAX = 256      # one entry per distinct watchlist-set; bounded so a churny user can't grow it forever
+COHORT_TTL_S = 3600         # cohorts change with the watchlist (the key) or daily as candles refresh
+COHORT_CACHE_MAX = 256      # one entry per distinct watchlist-set; bounded so churn cannot grow it forever
 
 
 async def _cohort_model(conn: asyncpg.Connection, symbols: list[str]) -> cohorts.CohortModel | None:
-    """The user's co-movement cohorts from cached REAL candles, memoized per watchlist-set for an hour."""
+    """Co-movement cohorts from cached candles, memoized per watchlist-set for an hour."""
     key = frozenset(symbols)
     hit = _COHORT_CACHE.get(key)
     if hit and time.time() - hit[0] < COHORT_TTL_S:
         return hit[1]
-    cands = {s: c for s, c in (await baselines.load_candles_many(conn, symbols)).items() if c}  # one round-trip
+    cands = {s: c for s, c in (await baselines.load_candles_many(conn, symbols)).items() if c}
     model = cohorts.build(cands) if len(cands) >= 2 else None
     if len(_COHORT_CACHE) >= COHORT_CACHE_MAX:
         _COHORT_CACHE.pop(min(_COHORT_CACHE, key=lambda k: _COHORT_CACHE[k][0]))  # evict the oldest
@@ -505,17 +483,16 @@ def _cohort_infos(model: cohorts.CohortModel | None) -> list[CohortInfo]:
 # --------------------------------------------------------------------------- the digest
 
 def attention_score(unusualness: float, impact_inr: float | None) -> float:
-    """Transparent ranking score. Unusualness (sigma-equivalent units) gently amplified by rupees at
-    stake: x1.3 at ~Rs1k impact, x2 at ~Rs10k, x3 at ~Rs1L. Holdings AMPLIFY an unusual move; they never
-    drown one out (a big move on something you don't hold still ranks by its own unusualness)."""
+    """Unusualness amplified by rupees at stake: x1.3 at ~Rs1k impact, x2 at ~Rs10k, x3 at ~Rs1L.
+    Holdings amplify an unusual move; an unheld symbol still ranks by its own unusualness."""
     if impact_inr is None:
         return unusualness
     return unusualness * (1.0 + math.log10(1.0 + abs(impact_inr) / 1000.0))
 
 
 def _headline(sig: Signal, ch: Change) -> str:
-    """ONE lead reason on the card (the rest are chips), or the plain move if nothing promoted it.
-    Volume is never the lead: it can't put a symbol in front of you by itself (see scoring.is_meaningful)."""
+    """One lead reason for the card, or the plain move if nothing promoted it. Volume is never the lead
+    (see scoring.is_meaningful)."""
     lead = next((r for r in sig.reasons if not r.startswith("Volume")), None)
     if lead:
         return lead
@@ -524,10 +501,9 @@ def _headline(sig: Signal, ch: Change) -> str:
 
 
 def _changes_from_rows(rows: list[WatchRow], model: cohorts.CohortModel | None = None) -> list[ChangeRow]:
-    """'While you were away'. Every moved symbol is included (rerank-never-suppress); is_meaningful marks
-    the ones where a reason fired. With a cohort model: a symbol moving ALONE vs its co-movement peers
-    gets that as a reason and its peer divergence adds to its rank; pack moves are tagged with their
-    cohort so the client can collapse them. Grouping is presentation only — nothing is ever removed."""
+    """Every moved symbol, ranked; is_meaningful marks the ones where a reason fired. With a cohort
+    model, a symbol moving alone gets that as a reason and its peer divergence adds to its rank;
+    pack moves are tagged with their cohort so the client can collapse them."""
     moved = [r for r in rows if r.has_baseline and r.change_since_seen and r.price is not None
              and r.change_since_seen.direction != "flat"]
 
@@ -541,7 +517,7 @@ def _changes_from_rows(rows: list[WatchRow], model: cohorts.CohortModel | None =
                             crossed=None, sigma_daily_pct=0.0, beta=None, elapsed_seconds=0.0),
         )
         if r.snoozed_until is not None:
-            # Snoozed: still LISTED with its reasons (nothing hidden), but not counted as needing attention.
+            # Snoozed: still listed with its reasons, but not counted as needing attention.
             sig = sig.model_copy(update={"is_meaningful": False})
         out.append(ChangeRow(symbol=r.symbol, price=r.price, provenance=r.provenance, last_seen=snap,
                              change_since_seen=ch, signal=sig, headline=_headline(sig, ch),
@@ -558,8 +534,8 @@ def _changes_from_rows(rows: list[WatchRow], model: cohorts.CohortModel | None =
             pr = res.get(c.symbol)
             if pr is not None:
                 c.peer_residual_z = round(float(pr[1]), 2)
-        # Which ones are "moving alone"? |peer z| >= 2. In a PAIR both members diverge from each other by
-        # construction, so only the one with the larger own move earns the flag ("X diverging from Y").
+        # In a pair both members diverge from each other by construction, so only the one with the
+        # larger own move earns the "moving alone" flag.
         for members in model.cohorts:
             present = [by_sym[s] for s in members if s in by_sym]
             flagged = [c for c in present if c.peer_residual_z is not None and abs(c.peer_residual_z) >= cohorts.PEER_Z_FLAG]
@@ -572,14 +548,13 @@ def _changes_from_rows(rows: list[WatchRow], model: cohorts.CohortModel | None =
                     c.signal.reasons.append(f"Diverging from {other}, which it usually moves with")
                 else:
                     c.signal.reasons.append("Moving alone — its usual peers aren't")
-                if c.snoozed_until is None:   # snoozed stays listed-not-counted, even if it diverges
+                if c.snoozed_until is None:   # snoozed stays listed but not counted, even if it diverges
                     c.signal.is_meaningful = True
                 c.headline = _headline(c.signal, c.change_since_seen)
 
     def rank(c: ChangeRow) -> float:
-        # Peer divergence is unusualness too (same sigma-ish units), so it ADDS to the rank rather than
-        # hard-overriding it: a 2.1-sigma lone mover you don't hold does not outrank a 2.5-sigma move on a
-        # Rs 1L position. Exposure keeps its say.
+        # Peer divergence is in the same sigma-ish units, so it adds to the rank rather than overriding
+        # it; exposure keeps its say.
         alone = abs(c.peer_residual_z) if (c.moving_alone and c.peer_residual_z is not None) else 0.0
         return attention_score(c.signal.unusualness + alone, c.impact_inr)
 
@@ -588,7 +563,7 @@ def _changes_from_rows(rows: list[WatchRow], model: cohorts.CohortModel | None =
 
 
 async def get_state(user_id: str) -> tuple[list[WatchRow], list[ChangeRow], list[CohortInfo]]:
-    """Watchlist + ranked changes + cohorts in ONE pass — the endpoint the client polls."""
+    """Watchlist, ranked changes and cohorts in one pass."""
     rows = await list_watchlist(user_id)
     symbols = [r.symbol for r in rows]
     model = None

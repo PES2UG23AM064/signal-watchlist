@@ -1,6 +1,5 @@
-// "Receipts": three pre-registered predictive hypotheses, tested out-of-sample on real NSE candles.
-// All three came back inside the noise band. That result is the reason the shipped ranking is purely
-// descriptive and no learned model runs anywhere in this app — so it gets the most space, not the least.
+// Backtest receipts: three pre-registered hypotheses tested out-of-sample on real NSE candles. All came
+// back inside the noise band, which is why the shipped ranking is purely descriptive.
 
 const NOISE = 0.5;
 
@@ -11,8 +10,8 @@ function includesNoise(ci) {
   return hasCi(ci) && ci[0] <= NOISE && ci[1] >= NOISE;
 }
 
-// The verdict is READ from the interval, never asserted by this file. If a re-run ever moves an
-// interval off 0.5, the label moves with it rather than the page quietly lying.
+// The verdict is read from the interval, never asserted here: if a re-run moves an interval off 0.5,
+// the label moves with it.
 function Verdict({ title, auc, ci, metrics }) {
   const noise = includesNoise(ci);
   const marginal = hasCi(ci) && !noise && ci[0] > NOISE && ci[0] - NOISE < 0.02;
@@ -60,8 +59,6 @@ function Verdict({ title, auc, ci, metrics }) {
   );
 }
 
-// The whole argument in one picture: three confidence intervals, one dashed line at chance. Every bar
-// crosses it. Nothing here is a chart of a win.
 function NoiseBandChart({ rows }) {
   const los = rows.map((r) => r.ci[0]);
   const his = rows.map((r) => r.ci[1]);
@@ -73,7 +70,6 @@ function NoiseBandChart({ rows }) {
     <div>
       <div className="eyebrow mb-3">Out-of-sample AUC with 95% bootstrap CI</div>
       <div className="relative">
-        {/* the chance line, drawn once behind every row */}
         <div
           className="absolute top-0 bottom-5 border-l border-dashed border-ink-4 pointer-events-none"
           style={{ left: `${at(NOISE)}%` }}
@@ -129,7 +125,7 @@ export default function ModelReceipts({ report }) {
     { key: "Active period", auc: act.test_auc, ci: act.test_auc_ci95 },
   ].filter((x) => hasCi(x.ci) && x.auc != null);
 
-  // Headline follows the data too: "none beat noise" is only claimed when that is what the intervals say.
+  // "None beat noise" is only claimed when that is what the intervals say.
   const tested = chartRows.length || 3;
   const nulls = chartRows.filter((x) => includesNoise(x.ci)).length;
   const headline =

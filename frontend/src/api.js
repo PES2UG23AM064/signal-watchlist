@@ -1,5 +1,5 @@
-// Thin API client. Base URL comes from VITE_API_URL (set per-environment); token is the bearer
-// session token persisted in localStorage so a returning user stays logged in on this device.
+// Thin API client. Base URL comes from VITE_API_URL; the bearer token lives in localStorage so a
+// returning user stays signed in on this device.
 
 const BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
 export const API_BASE = BASE;
@@ -17,7 +17,7 @@ function setToken(t) {
     if (t) localStorage.setItem("token", t);
     else localStorage.removeItem("token");
   } catch {
-    /* private mode / storage blocked — app still works for this session */
+    /* storage blocked — the app still works for this session */
   }
 }
 
@@ -60,7 +60,6 @@ export const api = {
     setToken(data.token);
     return data;
   },
-  // A remembered token is only a claim until the server agrees — called once on load.
   me: () => req("/auth/me"),
   async logout() {
     // Server-side first (rotates the token so it's dead everywhere), then forget it locally.
@@ -72,9 +71,9 @@ export const api = {
     setToken(null);
   },
   getState: () => req("/state"), // market + watchlist + ranked changes in one round trip
-  getModel: () => req("/model", { auth: false }), // the backtest "receipts" (static, real candles)
-  getStatus: () => req("/status", { auth: false }), // observability: provider route, poller lag, freshness
-  rewind: (minutes = 15) => req(`/dev/rewind?minutes=${minutes}`, { method: "POST" }), // demo: as-of N min ago
+  getModel: () => req("/model", { auth: false }), // backtest receipts
+  getStatus: () => req("/status", { auth: false }), // provider route, poller lag, freshness
+  rewind: (minutes = 15) => req(`/dev/rewind?minutes=${minutes}`, { method: "POST" }), // demo only
   getMarket: () => req("/market", { auth: false }),
   getWatchlist: () => req("/watchlist"),
   addSymbol: (symbol) => req("/watchlist", { method: "POST", body: { symbol } }),
@@ -84,6 +83,6 @@ export const api = {
     req(`/watchlist/${encodeURIComponent(symbol)}/snooze?minutes=${minutes}`, { method: "POST" }),
   setQuantity: (symbol, quantity) =>
     req(`/watchlist/${encodeURIComponent(symbol)}/quantity`, { method: "PATCH", body: { quantity } }),
-  inject: (symbol, kind) => req("/dev/inject", { method: "POST", body: { symbol, kind } }), // demo fault injection
+  inject: (symbol, kind) => req("/dev/inject", { method: "POST", body: { symbol, kind } }), // demo only
   markAllSeen: () => req("/watchlist/seen-all", { method: "POST" }),
 };

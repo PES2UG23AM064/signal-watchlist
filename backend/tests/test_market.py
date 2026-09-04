@@ -1,4 +1,4 @@
-"""Market-hours logic (IST, NSE holidays). Pure + fast — no DB, no network."""
+"""Market-hours logic (IST, NSE holidays). Pure: no DB, no network."""
 from datetime import UTC, datetime
 
 from app.market import market_status

@@ -1,8 +1,6 @@
-"""Provider interface + the Quote domain model.
+"""Provider interface and the Quote domain model.
 
-A Quote always carries its provenance: the value, the *event time* it is as-of (exchange/sample
-time, used for last-write-wins ordering), when we fetched it, and which source produced it. Later
-milestones lean on these fields for stale-write rejection and conflict reconciliation.
+A Quote carries its event time (exchange/sample time, used for last-write-wins ordering) and source.
 """
 from __future__ import annotations
 
@@ -14,10 +12,8 @@ from pydantic import BaseModel
 
 
 class Quote(BaseModel):
-    """A raw quote as produced by a provider. Intentionally permissive — a provider may hand us
-    garbage (0, negative, an absurd jump), and we must NOT crash on it. Sanity checks live at the
-    ingestion boundary (`app.quotes.sanitize`), which flags a quote as suspect and quarantines it
-    rather than raising. Never validate-to-raise here."""
+    """A raw quote as produced by a provider. Intentionally permissive: sanity checks live at the
+    ingestion boundary (app.quotes.is_suspect), which quarantines rather than raises."""
 
     symbol: str
     price: float

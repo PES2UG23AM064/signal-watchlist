@@ -1,8 +1,8 @@
 import { useEffect, useRef } from "react";
 import { X } from "lucide-react";
 
-// One overlay surface for the whole app: a bottom sheet on phones, a right-hand side panel from md up.
-// Detail lives here instead of expanding inline, so the cards behind it stay dense and calm.
+// The app's one overlay surface: a bottom sheet on phones, a side panel from md up. Detail lives here
+// rather than expanding inline so the cards behind it stay dense.
 export default function Drawer({ open, onClose, title, subtitle, children, footer }) {
   const panelRef = useRef(null);
   const returnFocusRef = useRef(null);

@@ -1,16 +1,14 @@
 import { inr, inrShort, timeAgo } from "../../format.js";
 import { Stat } from "../ui/Bits.jsx";
 
-// The four numbers that answer "should I be looking at this right now?" — the only thing above the
-// feed, deliberately one line tall. Each number appears here and nowhere else on the page.
+// The four numbers above the feed. Each appears here and nowhere else on the page.
 export default function SummaryStrip({ items, changes, loading }) {
   const live = changes.filter((c) => !c.snoozed_until);
   const attention = live.filter((c) => c.signal.is_meaningful).length;
   // Holdings come from the watchlist, not the digest: a held symbol that hasn't moved is still held.
   const held = items.filter((i) => i.impact_inr != null);
   const netImpact = held.reduce((s, i) => s + i.impact_inr, 0);
-  // "Since you last looked" is the product's unit of time: the oldest baseline on the list is how long
-  // you've been away from the symbol you've been away from longest.
+  // The oldest baseline on the list is how long you've been away.
   const baselines = items.filter((i) => i.last_seen?.event_time).map((i) => new Date(i.last_seen.event_time).getTime());
   const oldest = baselines.length ? Math.min(...baselines) : null;
   const worst = items.reduce((w, i) => {
@@ -20,7 +18,7 @@ export default function SummaryStrip({ items, changes, loading }) {
   const staleCount = items.filter((i) => i.provenance?.freshness !== "fresh").length;
   const simulated = items.some((i) => i.provenance?.is_simulated);
 
-  // 2x2 on a phone, one row on anything wider; the 1px gap over the line colour draws every divider.
+  // The 1px gap over the line colour draws the dividers.
   const grid = "card grid grid-cols-2 md:grid-cols-4 gap-px bg-line overflow-hidden mb-5";
   const tile = "bg-surface px-3.5 md:px-4 py-3";
 

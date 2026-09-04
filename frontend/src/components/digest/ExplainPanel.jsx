@@ -1,8 +1,7 @@
 import { inr, pct, displaySymbol } from "../../format.js";
 import { ProvenanceChips } from "../Badges.jsx";
 
-// Explainability: every number behind the score, as a plain two-column table. Nothing is a black box,
-// and nothing here is a prediction. Lives in the drawer so the feed itself stays dense.
+// Every number behind the score, as a plain table. Nothing here is a prediction.
 
 function Metric({ label, value, note, tone = "default" }) {
   const tones = { default: "text-ink", up: "text-up", down: "text-down" };
@@ -17,7 +16,7 @@ function Metric({ label, value, note, tone = "default" }) {
   );
 }
 
-// The endpoint can lie: a stock that ran +3% and came back to flat still HAPPENED. Draw the range.
+// The endpoint can mislead: a stock that ran +3% and came back to flat still happened, so draw the range.
 function PathTrack({ trough, peak, now }) {
   const lo = Math.min(trough, peak, now, 0);
   const hi = Math.max(trough, peak, now, 0);
@@ -47,7 +46,6 @@ export default function ExplainPanel({ row }) {
 
   return (
     <div className="space-y-5">
-      {/* Where it stands now */}
       <div className="flex items-end justify-between gap-4">
         <div>
           <div className="num text-2xl font-semibold text-ink">{inr(row.price)}</div>

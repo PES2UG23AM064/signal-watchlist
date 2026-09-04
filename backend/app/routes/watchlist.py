@@ -16,7 +16,7 @@ async def get_watchlist(user: User = CurrentUser) -> list[WatchRow]:
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def add_symbol(body: AddSymbolRequest, user: User = CurrentUser) -> dict:
-    """Add (idempotent). The moment you add a symbol is your first look at it: that price is the baseline."""
+    """Add a symbol (idempotent). The price at add time becomes the first baseline."""
     try:
         symbol = await services.add_symbol(user.id, body.symbol)
     except services.UnknownSymbol as e:
@@ -36,7 +36,7 @@ async def remove_symbol(symbol: str, user: User = CurrentUser) -> dict:
 
 @router.patch("/{symbol}/quantity")
 async def set_quantity(symbol: str, body: SetQuantityRequest, user: User = CurrentUser) -> dict:
-    """Record how much of this symbol you hold (or clear it). Held symbols rank by rupees at stake."""
+    """Record how much of this symbol the user holds (or clear it)."""
     if not await services.set_quantity(user.id, symbol, body.quantity):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "symbol is not on your watchlist")
     return {"ok": True}
@@ -44,7 +44,7 @@ async def set_quantity(symbol: str, body: SetQuantityRequest, user: User = Curre
 
 @router.post("/{symbol}/snooze")
 async def snooze(symbol: str, minutes: int | None = 60, user: User = CurrentUser) -> dict:
-    """Hold this symbol out of 'needs your attention' for N minutes (minutes=0 clears). Never hides it."""
+    """Hold this symbol out of 'needs your attention' for N minutes (minutes=0 clears); it stays listed."""
     if not await services.snooze(user.id, symbol, minutes or None):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "symbol is not on your watchlist")
     return {"ok": True}

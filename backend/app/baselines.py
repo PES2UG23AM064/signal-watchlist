@@ -1,13 +1,7 @@
-"""Per-symbol baselines computed from REAL daily candles — the honest denominators for scoring.
+"""Per-symbol baselines from real daily candles: the denominators scoring divides by.
 
-  ret_stdev_daily : stdev of daily simple returns  -> the z-score denominator ("how big is this move
-                    relative to how much this stock normally moves").
-  avg_volume_20d  : mean of the last 20 daily volumes -> volume-anomaly denominator.
-  week52_high/low : level-crossing references.
-  beta            : slope of the stock's daily returns regressed on ^NSEI's -> lets index-relative
-                    strength subtract the MARKET-driven part of a move (beta * index move), leaving the
-                    idiosyncratic residual. Plain OLS via numpy — interpretable, one line.
-
+ret_stdev_daily is the z-score denominator, avg_volume_20d the volume-anomaly denominator, and beta
+(OLS slope of daily returns on ^NSEI's) removes the market-driven part of a move.
 Candles are cached in Postgres so scoring keeps working when Yahoo is down; refreshed when stale.
 """
 from __future__ import annotations
@@ -45,7 +39,7 @@ def _returns(closes: np.ndarray) -> np.ndarray:
 
 
 def compute(symbol: str, candles: list[Candle], index_candles: list[Candle] | None) -> Baselines:
-    """Pure function over candles — unit-testable, no I/O."""
+    """Pure function over candles; no I/O."""
     if len(candles) < MIN_BARS:
         raise ValueError(f"need >= {MIN_BARS} candles for {symbol}, got {len(candles)}")
     closes = np.array([c.close for c in candles], dtype=float)
@@ -124,7 +118,7 @@ async def get_baselines(conn: asyncpg.Connection, symbols: list[str]) -> dict[st
 
 
 async def load_candles(conn: asyncpg.Connection, symbol: str) -> list[Candle]:
-    """Cached real history, oldest -> newest (also the backtest's input)."""
+    """Cached history for one symbol, oldest -> newest."""
     rows = await conn.fetch(
         "select day, open, high, low, close, volume from daily_candles where symbol=$1 order by day", symbol
     )
@@ -132,8 +126,7 @@ async def load_candles(conn: asyncpg.Connection, symbol: str) -> list[Candle]:
 
 
 async def load_candles_many(conn: asyncpg.Connection, symbols: list[str]) -> dict[str, list[Candle]]:
-    """Cached history for MANY symbols in one round-trip (grouped in Python). A per-symbol loop was the
-    last N+1 on the /state path: 30 symbols x ~200ms cross-region RTT on every cohort-cache miss."""
+    """Cached history for many symbols in one round-trip; a per-symbol loop was an N+1 on /state."""
     if not symbols:
         return {}
     rows = await conn.fetch(
@@ -154,10 +147,8 @@ async def _is_fresh(conn: asyncpg.Connection, symbol: str) -> bool:
 
 
 async def ensure_baselines(symbol: str, force: bool = False) -> Baselines | None:
-    """Backfill (or refresh stale) baselines for one symbol. Network happens OUTSIDE any held DB
-    connection. Returns None (and logs) if Yahoo is unavailable — callers degrade gracefully.
-    The index (^NSEI) is cached with the same freshness rule, so it is fetched at most once per
-    refresh window, not once per symbol added."""
+    """Backfill (or refresh stale) baselines for one symbol. Network I/O happens outside any held DB
+    connection. Returns None if Yahoo is unavailable; raises SymbolNotFound for a definite miss."""
     async with db.pool().acquire() as conn:
         if not force and await _is_fresh(conn, symbol):
             return (await get_baselines(conn, [symbol])).get(symbol)
@@ -166,14 +157,14 @@ async def ensure_baselines(symbol: str, force: bool = False) -> Baselines | None
     try:
         candles = await yahoo.get_history(symbol)
     except SymbolNotFound:
-        raise                                   # a definite "no such symbol": the caller refuses it
+        raise
     except YahooError as e:
         log.warning("baseline backfill unavailable for %s: %s", symbol, e)
         return None
 
     index_candles: list[Candle] | None = None
     if symbol != INDEX_SYMBOL:
-        await ensure_baselines(INDEX_SYMBOL)  # cached; only hits Yahoo if the index cache is stale
+        await ensure_baselines(INDEX_SYMBOL)  # same freshness rule, so at most one fetch per window
         async with db.pool().acquire() as conn:
             index_candles = await load_candles(conn, INDEX_SYMBOL) or None
 

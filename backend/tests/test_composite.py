@@ -1,5 +1,5 @@
-"""Composite provider + circuit breaker: the live feed never takes the app down, the fallback is honest
-about its source, and a failing upstream is not hammered while the breaker is open."""
+"""Composite provider + circuit breaker: a failing live feed never takes the app down, the fallback
+labels its source, and an open breaker stops calling upstream until the cooldown elapses."""
 from __future__ import annotations
 
 import asyncio
@@ -54,7 +54,7 @@ def test_failure_falls_back_for_that_quote_and_trips_breaker_after_threshold():
     live.fail = True
     for _ in range(3):
         q = asyncio.run(cp.get_quote("X.NS"))
-        assert q.source == "replay"          # never an exception, never a missing quote
+        assert q.source == "replay"          # never raises, never a missing quote
     assert cp.breaker.state() == "open" and live.calls == 3
 
 
@@ -65,9 +65,9 @@ def test_open_breaker_does_not_hammer_upstream_then_half_opens_after_cooldown():
     for _ in range(3):
         asyncio.run(cp.get_quote("X.NS"))
     calls_when_opened = live.calls
-    asyncio.run(cp.get_quote("X.NS"))               # open: no upstream call
+    asyncio.run(cp.get_quote("X.NS"))               # breaker open: no upstream call
     assert live.calls == calls_when_opened and cp.last_route == "fallback:breaker-open"
-    clock.t += 61                                    # cooldown elapsed -> half-open trial
+    clock.t += 61                                    # cooldown elapsed: half-open trial
     live.fail = False
     q = asyncio.run(cp.get_quote("X.NS"))
     assert q.source == "yahoo" and live.calls == calls_when_opened + 1 and cp.breaker.state() == "closed"
@@ -87,12 +87,12 @@ def test_secondary_is_a_best_effort_cross_check_never_an_error():
     cp = CompositeProvider(live, replay, CircuitBreaker(_clock=Clock()), market_open=lambda: True, secondary=FakeSecondary())
     q2 = asyncio.run(cp.get_secondary_quote("X.NS"))
     assert q2 is not None and q2.source == "twelvedata" and q2.price == 100.5
-    # served path is untouched by the secondary
+    # the served path is untouched by the secondary
     assert asyncio.run(cp.get_quote("X.NS")).source == "yahoo"
     # a failing secondary returns None, never raises
     cp.secondary = FakeSecondary(fail=True)
     assert asyncio.run(cp.get_secondary_quote("X.NS")) is None
-    # no secondary configured / market closed -> None
+    # no secondary configured, or market closed: None
     assert asyncio.run(CompositeProvider(live, replay, market_open=lambda: True).get_secondary_quote("X.NS")) is None
     cp2 = CompositeProvider(live, replay, market_open=lambda: False, secondary=FakeSecondary())
     assert asyncio.run(cp2.get_secondary_quote("X.NS")) is None

@@ -1,5 +1,5 @@
-"""DB-backed account lifecycle: register, duplicate refused, sign-in, generic errors, lockout, token
-rotation on logout, expiry. Runs against the real Postgres like the other integration tests."""
+"""DB-backed account lifecycle: register, duplicate refused, multi-device sign-in, generic errors,
+lockout, logout (one device / everywhere), expiry. Same INTEGRATION=1 gate as test_db_invariants."""
 from __future__ import annotations
 
 import asyncio
@@ -45,13 +45,12 @@ async def _flow():
             await auth.register(EMAIL, PASSWORD)
         assert e.value.status_code == 409
 
-        # Sign-in on a SECOND device: a fresh token, and the first device is still signed in — identity
-        # follows you across devices, and so does being signed in.
+        # Sign-in on a second device issues a fresh token and leaves the first device signed in.
         s2 = await auth.login(EMAIL, PASSWORD)
         assert s2.token != s.token
         assert (await auth.current_user(f"Bearer {s2.token}")).email == EMAIL
         assert (await auth.current_user(f"Bearer {s.token}")).email == EMAIL
-        # Tokens are stored hashed: the raw token never appears in the table.
+        # Tokens are stored hashed; the raw token never appears in the table.
         async with db.pool().acquire() as c:
             assert await c.fetchval("select count(*) from sessions where token_hash in ($1, $2)", s.token, s2.token) == 0
             assert await c.fetchval("select count(*) from sessions where user_id=$1", uuid.UUID(s.user.id)) == 2
@@ -69,12 +68,11 @@ async def _flow():
         with pytest.raises(HTTPException) as e:
             await auth.login(EMAIL, "wrong-password-1")
         assert e.value.status_code == 429
-        with pytest.raises(HTTPException) as e:                        # even the RIGHT password is refused while locked
+        with pytest.raises(HTTPException) as e:                        # the right password is refused while locked
             await auth.login(EMAIL, PASSWORD)
         assert e.value.status_code == 429
 
-        # Unlock (simulate time passing). Logout ends THIS session only: the token is dead everywhere it
-        # was copied, the other device is untouched.
+        # Unlock (simulate time passing). Logout ends this session only; the other device is untouched.
         async with db.pool().acquire() as c:
             await c.execute("update users set locked_until=null where email=$1", EMAIL)
         s3 = await auth.login(EMAIL, PASSWORD)
@@ -91,7 +89,7 @@ async def _flow():
             with pytest.raises(HTTPException):
                 await auth.current_user(f"Bearer {dead}")
 
-        # Expiry: a session issued too long ago is refused — and swept on the next sign-in.
+        # Expiry: a session issued too long ago is refused and swept on the next sign-in.
         s5 = await auth.login(EMAIL, PASSWORD)
         async with db.pool().acquire() as c:
             await c.execute("update sessions set issued_at = now() - interval '31 days' where user_id=$1", uuid.UUID(s5.user.id))

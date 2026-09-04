@@ -1,18 +1,8 @@
-"""Identity: email + password, server-issued bearer session token — with a real lifecycle.
+"""Identity: email + password, server-issued bearer session tokens (one per device, stored hashed).
 
-Explicit "create account" vs "sign in" (a typo in your email must never silently create a second, empty
-account). Deliberately not OAuth (documented in README). Lifecycle (a fintech panel will ask):
-  * passwords are bcrypt-hashed (cost BCRYPT_ROUNDS); never stored or logged in clear;
-  * one session PER DEVICE (sessions table, tokens stored hashed): signing in on your phone does not
-    sign your laptop out — the watchlist follows you, and so does being signed in;
-  * sessions EXPIRE (TOKEN_TTL_DAYS from issue);
-  * logout DELETES that session server-side, so a copied token dies everywhere it was copied, while the
-    user's other devices stay signed in (`everywhere=true` ends them all);
-  * guessing is THROTTLED: after MAX_ATTEMPTS failures the account locks for LOCK_MINUTES;
-  * sign-in errors are deliberately generic ("invalid email or password") so the endpoint does not
-    reveal which emails have accounts.
-bcrypt is ~100ms of CPU: it runs in a worker thread so it never stalls the event loop (and the SSE
-streams and other requests riding on it), and no pooled DB connection is held while it runs.
+"Create account" and "sign in" are separate so a typo never silently creates a second account.
+Sign-in errors are generic so the endpoint does not reveal which emails exist.
+bcrypt is ~100ms of CPU: it runs in a worker thread with no pooled DB connection held.
 """
 from __future__ import annotations
 
@@ -49,7 +39,7 @@ class Session:
     user: User
 
 
-BCRYPT_ROUNDS = 10  # OWASP's floor; cost 12 was ~2s of a free-tier vCPU per sign-in (each hash records its cost)
+BCRYPT_ROUNDS = 10  # OWASP's floor; cost 12 was ~2s per sign-in on a free-tier vCPU
 
 
 def _hash(password: str) -> str:
@@ -73,7 +63,7 @@ def _token_hash(token: str) -> str:
 
 
 async def _open_session(conn, user_id: str) -> str:
-    """Issue a token for THIS device. Other devices' sessions are untouched — that is the whole point.
+    """Issue a token for this device; other devices' sessions are untouched.
     Expired sessions for the user are swept here so the table cannot grow without bound."""
     token = _new_token()
     await conn.execute("delete from sessions where user_id=$1 and issued_at < now() - make_interval(days => $2)",
@@ -104,8 +94,7 @@ def validate_new_credentials(email: str, password: str, display_name: str | None
 
 
 async def register(email: str, password: str, display_name: str | None = None) -> Session:
-    """Create an account. 409 if the email is taken (two concurrent first sign-ups race here; the unique
-    constraint makes exactly one INSERT win). Hashing happens off the event loop, before any connection."""
+    """Create an account; 409 if the email is taken (the unique constraint makes exactly one INSERT win)."""
     email = normalize_email(email)
     name = validate_new_credentials(email, password, display_name)
     password_hash = await anyio.to_thread.run_sync(_hash, password)
@@ -122,7 +111,7 @@ async def register(email: str, password: str, display_name: str | None = None) -
 
 
 async def login(email: str, password: str) -> Session:
-    """Verify credentials and open a session for this device. Sessions on other devices stay valid."""
+    """Verify credentials and open a session for this device; other devices stay signed in."""
     email = normalize_email(email)
     if not password:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "password is required")
@@ -138,7 +127,7 @@ async def login(email: str, password: str) -> Session:
         wait = int((row["locked_until"] - now).total_seconds() // 60) + 1
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, f"too many attempts; try again in ~{wait} min")
 
-    ok = await anyio.to_thread.run_sync(_verify, password, row["password_hash"])  # off the event loop
+    ok = await anyio.to_thread.run_sync(_verify, password, row["password_hash"])
     async with db.pool().acquire() as conn:
         if not ok:
             attempts = row["failed_attempts"] + 1
@@ -153,13 +142,12 @@ async def login(email: str, password: str) -> Session:
     return Session(token=token, user=User(id=str(row["id"]), email=email, display_name=row["display_name"]))
 
 
-# A real bcrypt hash of a random string: used to equalize timing for unknown emails (never matches).
+# Real bcrypt hash of a random string: equalizes timing for unknown emails (never matches).
 _DUMMY_HASH = _hash(secrets.token_urlsafe(16))
 
 
 async def logout(user_id: str, token: str, everywhere: bool = False) -> None:
-    """Server-side logout: THIS session is deleted, so the token is dead everywhere it was copied — but
-    the user's other devices stay signed in. `everywhere` ends every session of the account."""
+    """Delete this session server-side (so a copied token dies too); `everywhere` ends all of them."""
     async with db.pool().acquire() as conn:
         if everywhere:
             await conn.execute("delete from sessions where user_id=$1", user_id)
@@ -168,7 +156,7 @@ async def logout(user_id: str, token: str, everywhere: bool = False) -> None:
 
 
 async def current_session(authorization: str | None = Header(default=None)) -> Session:
-    """FastAPI dependency: resolve the bearer token to (user, token), or 401 (unknown OR expired)."""
+    """FastAPI dependency: resolve the bearer token to a Session, or 401 (unknown or expired)."""
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "missing bearer token")
     token = authorization.split(" ", 1)[1].strip()

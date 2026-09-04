@@ -1,12 +1,11 @@
 import { AlertTriangle, GitCompareArrows, Sparkles } from "lucide-react";
 import { timeAgo } from "../format.js";
 
-// Honest data-state surface: the app never shows a number without saying how fresh it is and
-// whether it's live or simulated. These three axes are independent (see backend app/market.py).
-// One shape (.chip), colour carries the meaning, copy stays to two or three words.
+// Data-state chips: no number is shown without saying how fresh it is and where it came from. Freshness
+// and source are independent axes; nothing here is a forecast. One shape (.chip), colour carries the meaning.
 
 const FRESH = {
-  // "fresh", not "live": this axis is the quote's AGE. Whether it's a real feed is the source axis.
+  // "fresh", not "live": this axis is the quote's age, not whether the feed is real.
   fresh: { cls: "chip-fresh", dot: "bg-fresh", word: "fresh" },
   delayed: { cls: "chip-delayed", dot: "bg-delayed", word: "delayed" },
   stale: { cls: "chip-stale", dot: "bg-stale", word: "stale" },
@@ -32,8 +31,7 @@ export function FreshnessBadge({ provenance }) {
   );
 }
 
-// Loud "simulated" chip when the data isn't a live feed — so "Market closed" next to moving prices
-// never reads as the app lying.
+// Shown when the data isn't a live feed, so "Market closed" next to moving prices never reads as a lie.
 export function SourceBadge({ provenance }) {
   if (!provenance?.is_simulated) return null;
   return (
@@ -44,7 +42,6 @@ export function SourceBadge({ provenance }) {
   );
 }
 
-// The quarantine made visible — in customer words. The legend explains it in full.
 export function QuarantineBadge({ provenance }) {
   const n = provenance?.quarantined_recent || 0;
   if (!n) return null;
@@ -59,8 +56,7 @@ export function QuarantineBadge({ provenance }) {
   );
 }
 
-// Cross-source reconciliation made visible: a second feed disagrees with the price we serve. We show
-// the disagreement rather than silently picking one.
+// A second feed disagrees with the served price; show the disagreement rather than silently pick one.
 export function DisputedBadge({ provenance }) {
   if (!provenance?.disputed || !provenance.dispute) return null;
   const d = provenance.dispute;
@@ -75,11 +71,7 @@ export function DisputedBadge({ provenance }) {
   );
 }
 
-// NOTE: there is deliberately no "predicted probability" badge in this file. All three pre-registered
-// hypotheses came back with confidence intervals straddling 0.5, so no learned model ships and nothing
-// on a card is a forecast. The evidence for that decision lives in How it works.
-
-// Additional reasons beyond the headline. The headline carries the strongest one in plain English.
+// Reasons beyond the headline, which already carries the strongest one.
 export function ExtraReasons({ reasons, lead, max = 2 }) {
   // A headline that joins several reasons would otherwise repeat them all as chips.
   const extra = (reasons || []).filter((r) => r !== lead && !(lead || "").includes(r));
@@ -110,16 +102,15 @@ export function MarketPill({ market }) {
       aria-label={market.label}
     >
       <span className={`w-1.5 h-1.5 rounded-full ${market.is_open ? "bg-up animate-pulse" : "bg-ink-4"}`} />
-      {/* On a phone the six top-bar items don't fit with the words; the dot + tooltip carry it. */}
+      {/* The top bar doesn't fit the full label on a phone; the dot and tooltip carry it. */}
       <span className="hidden sm:inline">{market.label}</span>
       <span className="sm:hidden">{market.is_open ? "Open" : "Closed"}</span>
     </span>
   );
 }
 
-// Provenance strip used by both the digest cards and the watchlist rows, so the honesty labels sit
-// in the same place with the same order everywhere. Freshness is per price and always shown; the source
-// chip can be turned off where the page already says it once (the watchlist, next to the summary strip).
+// Shared by digest cards and watchlist rows so the labels sit in the same place and order everywhere.
+// Freshness is always shown; the source chip is off where the page already names the source once.
 export function ProvenanceChips({ provenance, source = true, children }) {
   return (
     <div className="flex items-center gap-1 flex-wrap">

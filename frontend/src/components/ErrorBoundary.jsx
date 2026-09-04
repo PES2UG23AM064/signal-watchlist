@@ -1,8 +1,6 @@
 import { Component } from "react";
 
-// A render error anywhere below this point would otherwise leave a blank white page — the worst
-// possible failure for a product whose whole claim is "we tell you the truth about your data".
-// Instead: say what happened, keep the app recoverable, and never pretend the numbers are fine.
+// A render error below this point would otherwise leave a blank page. Say what happened and stay recoverable.
 export default class ErrorBoundary extends Component {
   constructor(props) {
     super(props);
@@ -14,8 +12,7 @@ export default class ErrorBoundary extends Component {
   }
 
   componentDidCatch(error, info) {
-    // In production this is where a real deployment would ship to Sentry/Datadog. Console keeps the
-    // stack reachable in a demo without adding a dependency.
+    // Console keeps the stack reachable without adding an error-reporting dependency.
     console.error("Signal crashed while rendering:", error, info?.componentStack);
   }
 

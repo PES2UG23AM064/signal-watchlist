@@ -21,13 +21,9 @@ STALE_OUTAGE_S = 150  # long enough for the badge to pass 'delayed' (>20s) and r
 
 @router.post("/inject")
 async def inject(body: InjectRequest, user: User = CurrentUser) -> dict:
-    """Fault injection, on demand, through the REAL ingestion path — so the quarantine and freshness
-    machinery is demonstrated, not described:
-      garbage  -> a price=0 tick        (structurally impossible -> quarantined, never served)
-      jump     -> price x1.35 in one tick (beyond NSE's 20% circuit band -> quarantined)
-      future   -> event_time +1 hour     (would poison latest-by-event-time -> quarantined)
-      stale    -> pause this symbol's upstream for ~2.5 min (nothing fake is written; its data simply ages
-                  and the badge flips fresh -> delayed -> stale, then recovers when polling resumes)."""
+    """Fault injection through the real ingestion path.
+    garbage: price=0 tick; jump: price x1.35 (beyond NSE's 20% band); future: event_time +1h;
+    stale: pause this symbol's upstream so its data ages; conflict: a divergent secondary quote."""
     if not settings.enable_dev_endpoints:
         raise HTTPException(404, "dev endpoints disabled")
     symbol = normalize(body.symbol)
@@ -42,8 +38,7 @@ async def inject(body: InjectRequest, user: User = CurrentUser) -> dict:
         if prev is None:
             raise HTTPException(400, "no quote for symbol yet")
         if body.kind == "conflict":
-            # A second feed that DISAGREES by 5%. Recorded as role='secondary': it can never become the
-            # served price; the symbol shows "disputed" with both numbers. Reconciliation, made visible.
+            # Recorded as role='secondary', so it can never become the served price.
             q2 = Quote(symbol=symbol, price=round(prev.price * 1.05, 2), volume=prev.volume, event_time=now,
                        source="injected-secondary")
             await quotes.record_quote(conn, q2, None, role="secondary")
@@ -68,10 +63,8 @@ async def inject(body: InjectRequest, user: User = CurrentUser) -> dict:
 
 @router.post("/rewind")
 async def rewind(minutes: int = 15, user: User = CurrentUser) -> dict:
-    """Re-create the caller's snapshots AS OF `minutes` ago, using the simulator's deterministic history —
-    so 'While you were away' can be demonstrated on demand instead of waiting for a scripted event.
-    Replay-only: it is exact there because price is a pure function of time. Bypasses the monotonic
-    watermark deliberately (dev tool; the real mark-seen path never does)."""
+    """Re-create the caller's snapshots as of `minutes` ago from the simulator's deterministic history.
+    Replay-only, and deliberately bypasses the monotonic watermark."""
     if not settings.enable_dev_endpoints:
         raise HTTPException(404, "dev endpoints disabled")
     p = replay_instance()
@@ -79,7 +72,7 @@ async def rewind(minutes: int = 15, user: User = CurrentUser) -> dict:
         raise HTTPException(400, "rewind requires the replay simulator (deterministic history)")
     active = get_provider()
     if isinstance(active, CompositeProvider) and active.serving_live():
-        # Served prices are LIVE right now; reconstructing "then" from the simulator would be inconsistent.
+        # Served prices are live right now; reconstructing "then" from the simulator would be inconsistent.
         raise HTTPException(400, "rewind is only available while the simulator is the active source (market closed or live feed down)")
     if not 1 <= minutes <= 180:
         raise HTTPException(400, "minutes must be in [1, 180]")
@@ -92,7 +85,7 @@ async def rewind(minutes: int = 15, user: User = CurrentUser) -> dict:
         async with conn.transaction():
             rewound = 0
             for sym in symbols:
-                if not p.can_quote(sym):   # no real anchor (e.g. a delisted ticker) -> nothing to reconstruct
+                if not p.can_quote(sym):   # no real anchor, nothing to reconstruct
                     continue
                 price_then = p.price_volume_at(sym, then)[0]
                 await services.force_snapshot(conn, user.id, sym, price_then, then_dt, idx_then)

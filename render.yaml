@@ -1,14 +1,13 @@
-# Render Blueprint — deploys Signal as two free services:
-#   1. signal-watchlist-api : FastAPI + the in-process poller (one container)
-#   2. signal-watchlist-web : the React static site (Vite build)
+# Render Blueprint: two free services.
+#   signal-watchlist-api : FastAPI + the in-process poller (one container)
+#   signal-watchlist-web : the React static site (Vite build)
 #
-# After the first deploy you set two secrets in the dashboard (never committed):
-#   - DATABASE_URL on the API  -> your Supabase SESSION-mode string (URL-encode any '@' as %40)
-#   - VITE_API_URL on the web  -> the API's public URL (e.g. https://signal-watchlist-api.onrender.com)
+# After the first deploy, set two secrets in the dashboard (never committed):
+#   DATABASE_URL on the API : the Supabase SESSION-mode string (URL-encode '@' in the password as %40)
+#   VITE_API_URL on the web : the API's public URL (e.g. https://signal-watchlist-api.onrender.com)
 # then redeploy the web service so the build picks up VITE_API_URL.
 #
-# CORS: the API already allows any https://*.onrender.com origin (see app/config.py), so the two
-# services talk without hardcoding the web URL.
+# CORS: the API allows any https://*.onrender.com origin (app/config.py), so the web URL is not hardcoded.
 
 services:
   - name: signal-watchlist-api
@@ -16,9 +15,8 @@ services:
     runtime: python
     rootDir: ./backend
     plan: free
-    # Same region as the Supabase project. Every request is several DB round-trips; from Oregon each one
-    # crossed the Pacific (~200ms) and an "add symbol" took ~4s. Colocated it is tens of milliseconds.
-    # NOTE: Render cannot move an existing service between regions — see README "Deployment".
+    # Same region as the Supabase project: every request is several DB round-trips, and a cross-Pacific
+    # hop (~200ms each) made "add symbol" take ~4s. Render cannot move an existing service between regions.
     region: singapore
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT

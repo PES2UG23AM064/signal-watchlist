@@ -1,5 +1,5 @@
-"""Cohort invariants: clusters recover known structure; grouping never hides a symbol; thin history ->
-singleton; misaligned calendars are aligned, not silently misused."""
+"""Cohort invariants: clusters recover known structure, grouping is a partition (nothing hidden), thin
+history forces a singleton, and misaligned calendars are aligned on common days."""
 from __future__ import annotations
 
 from datetime import date, timedelta
@@ -42,14 +42,13 @@ def test_recovers_sector_structure_from_returns_alone():
     assert by_symbol["HDFCBANK.NS"] == by_symbol["ICICIBANK.NS"] == by_symbol["SBIN.NS"]
     assert by_symbol["TCS.NS"] != by_symbol["HDFCBANK.NS"]
     assert by_symbol["LONER.NS"] == frozenset({"LONER.NS"})   # independent name stays alone
-    # Every symbol appears in exactly one cohort — grouping is a partition, nothing is dropped.
+    # every symbol appears in exactly one cohort
     flat = [s for g in model.cohorts for s in g]
     assert sorted(flat) == sorted(series) and len(flat) == len(set(flat))
 
 
 def test_model_symbols_are_aligned_with_corr_matrix():
-    """model.symbols must index model.corr positionally (a misaligned lookup once displayed 0.14 for a
-    pair whose true correlation was ~0.65)."""
+    """model.symbols must index model.corr positionally regardless of input insertion order."""
     series = _sector_series()
     cands = dict(reversed(list({s: _candles(v) for s, v in series.items()}.items())))  # scrambled insertion order
     model = cohorts.build(cands)
@@ -81,7 +80,7 @@ def test_thin_history_is_forced_singleton():
 def test_misaligned_calendars_are_aligned_on_common_days():
     series = _sector_series()
     cands = {s: _candles(v) for s, v in series.items()}
-    # Give one symbol a different holiday: drop a day. Alignment must still work (common days), not crash.
+    # One symbol observes an extra holiday; alignment must use common days, not crash.
     holiday = cands["TCS.NS"][10].day
     cands["TCS.NS"] = [c for c in cands["TCS.NS"] if c.day != holiday]
     symbols, rets, days = cohorts.returns_matrix(cands)
@@ -91,16 +90,15 @@ def test_misaligned_calendars_are_aligned_on_common_days():
 def test_peer_residual_flags_the_one_moving_alone_not_the_pack():
     series = _sector_series()
     model = cohorts.build({s: _candles(v) for s, v in series.items()})
-    # Whole IT pack down ~2%; INFY down 6% -> INFY moving alone; TCS/WIPRO are just the pack.
+    # Whole IT pack down ~2%, INFY down 6%: INFY is moving alone, TCS/WIPRO are just the pack.
     moves = {"TCS.NS": -0.020, "INFY.NS": -0.060, "WIPRO.NS": -0.021, "HDFCBANK.NS": 0.001, "ICICIBANK.NS": 0.0,
              "SBIN.NS": -0.001, "LONER.NS": 0.03}
     res = cohorts.peer_residuals(model, moves, elapsed_seconds=3 * 22500, trading_day_s=22500, min_elapsed_s=900)
-    assert res["LONER.NS"] is None                         # singleton -> caller falls back to beta residual
+    assert res["LONER.NS"] is None                         # singleton: caller falls back to beta residual
     assert abs(res["INFY.NS"][1]) >= cohorts.PEER_Z_FLAG   # moving alone
-    assert abs(res["TCS.NS"][1]) < cohorts.PEER_Z_FLAG     # moving with the pack -> not promoted
+    assert abs(res["TCS.NS"][1]) < cohorts.PEER_Z_FLAG     # moving with the pack: not promoted
     assert abs(res["WIPRO.NS"][1]) < cohorts.PEER_Z_FLAG
-    # Regression: results must be PLAIN Python floats (numpy scalars break Pydantic/JSON serialization —
-    # a numpy.bool_ from `abs(np.float64) >= 2` 500'd /state once).
+    # Results must be plain Python floats: numpy scalars break Pydantic/JSON serialization.
     for v in res.values():
         if v is not None:
-            assert v[0].__class__ is float and v[1].__class__ is float  # exact type: np.float64 must NOT pass
+            assert v[0].__class__ is float and v[1].__class__ is float  # exact type; np.float64 must not pass

@@ -1,7 +1,6 @@
 import { displaySymbol } from "../../format.js";
 
-// Observability, in the product: what's serving the numbers, how fresh they are, what got refused.
-// Point at it during the demo; it's how you'd know the app was lying if it ever did.
+// Observability in the product: what's serving the numbers, how fresh they are, what got refused.
 
 function Cell({ label, value, sub }) {
   return (
@@ -23,8 +22,7 @@ export default function SystemHealth({ status }) {
   const lag = pl.last_poll_at ? Math.round((Date.now() - new Date(pl.last_poll_at).getTime()) / 1000) : null;
   const healthy = pl.enabled && lag != null && lag < 30 && d.quarantined_last_hour < 50;
   const maxAge = Math.max(30, ...d.freshness.map((f) => f.age_seconds));
-  // Every watched symbol across the deployment can be dozens of rows. Show the oldest — the ones that
-  // would be a problem — and say how many are behind them.
+  // Freshness covers every watched symbol in the deployment; show the oldest and count the rest.
   const RANK = { fresh: 0, delayed: 1, stale: 2, no_data: 3 };
   const ranked = [...d.freshness].sort(
     (a, b) => (RANK[b.freshness] ?? 0) - (RANK[a.freshness] ?? 0) || b.age_seconds - a.age_seconds

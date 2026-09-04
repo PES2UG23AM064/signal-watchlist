@@ -12,8 +12,7 @@ router = APIRouter(tags=["state"])
 
 @router.get("/state", response_model=StateResponse)
 async def get_state(user: User = CurrentUser) -> StateResponse:
-    """One round trip for the whole dashboard: market status + watchlist + ranked changes,
-    computed in a single pass (no duplicate queries)."""
+    """The whole dashboard in one round trip: market status, watchlist, ranked changes, cohorts."""
     items, changes, cohorts = await services.get_state(user.id)
     s = market_status()
     return StateResponse(
