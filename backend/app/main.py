@@ -17,7 +17,7 @@ from .config import settings
 from .market import market_status
 from .models import MarketStatusModel
 from .providers import get_provider
-from .routes import auth, changes, dev, model, state, watchlist
+from .routes import auth, changes, dev, events, model, state, status, watchlist
 
 logging.basicConfig(level=logging.INFO)
 
@@ -58,6 +58,8 @@ app.include_router(changes.router)
 app.include_router(state.router)
 app.include_router(model.router)
 app.include_router(dev.router)
+app.include_router(status.router)
+app.include_router(events.router)
 
 
 @app.get("/market", response_model=MarketStatusModel, tags=["meta"])

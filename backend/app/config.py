@@ -15,6 +15,12 @@ class Settings(BaseSettings):
     market_provider: str = "replay"
     replay_seed: int = 42
 
+    # Optional SECOND real feed for cross-source reconciliation (Twelve Data; free key). Its quotes are a
+    # cross-check only — never served. Divergence beyond the threshold within the window => "disputed".
+    twelvedata_api_key: str | None = None
+    dispute_threshold_pct: float = 2.0
+    dispute_window_seconds: int = 120
+
     # Dev/demo endpoints (e.g. POST /dev/rewind). Auth-scoped and Replay-only; on for the hackathon demo.
     enable_dev_endpoints: bool = True
 

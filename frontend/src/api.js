@@ -2,6 +2,7 @@
 // session token persisted in localStorage so a returning user stays logged in on this device.
 
 const BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
+export const API_BASE = BASE;
 
 export function getToken() {
   try {
@@ -52,17 +53,29 @@ export const api = {
     setToken(data.token);
     return data;
   },
-  logout() {
+  async logout() {
+    // Server-side first (rotates the token so it's dead everywhere), then forget it locally.
+    try {
+      await req("/auth/logout", { method: "POST" });
+    } catch {
+      /* already invalid/expired — local clear is still correct */
+    }
     setToken(null);
   },
   getState: () => req("/state"), // market + watchlist + ranked changes in one round trip
   getModel: () => req("/model", { auth: false }), // the backtest "receipts" (static, real candles)
+  getStatus: () => req("/status", { auth: false }), // observability: provider route, poller lag, freshness
   rewind: (minutes = 15) => req(`/dev/rewind?minutes=${minutes}`, { method: "POST" }), // demo: as-of N min ago
   getMarket: () => req("/market", { auth: false }),
   getWatchlist: () => req("/watchlist"),
   addSymbol: (symbol) => req("/watchlist", { method: "POST", body: { symbol } }),
   removeSymbol: (symbol) => req(`/watchlist/${encodeURIComponent(symbol)}`, { method: "DELETE" }),
   markSeen: (symbol) => req(`/watchlist/${encodeURIComponent(symbol)}/seen`, { method: "POST" }),
+  snooze: (symbol, minutes = 60) =>
+    req(`/watchlist/${encodeURIComponent(symbol)}/snooze?minutes=${minutes}`, { method: "POST" }),
+  setQuantity: (symbol, quantity) =>
+    req(`/watchlist/${encodeURIComponent(symbol)}/quantity`, { method: "PATCH", body: { quantity } }),
+  inject: (symbol, kind) => req("/dev/inject", { method: "POST", body: { symbol, kind } }), // demo fault injection
   markAllSeen: () => req("/watchlist/seen-all", { method: "POST" }),
   getChanges: () => req("/changes"),
 };

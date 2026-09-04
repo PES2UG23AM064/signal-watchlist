@@ -20,6 +20,17 @@ class AddSymbolRequest(BaseModel):
     symbol: str
 
 
+class SetQuantityRequest(BaseModel):
+    quantity: float | None  # shares held; None clears it
+
+
+class InjectRequest(BaseModel):
+    """Dev/demo fault injection: make the resilience machinery observable on demand."""
+
+    symbol: str
+    kind: str  # "garbage" | "jump" | "future" | "stale"
+
+
 class Snapshot(BaseModel):
     price: float
     event_time: datetime
@@ -40,6 +51,11 @@ class Provenance(BaseModel):
     event_time: datetime
     age_seconds: float
     freshness: str         # "fresh" | "delayed" | "stale" | "no_data"
+    quarantined_recent: int = 0  # bad ticks rejected in the last 5 min (stored for audit, never served)
+    # Cross-source reconciliation: a second feed disagrees with the served (primary) price beyond the
+    # threshold. We show the disagreement instead of silently picking one; the primary is what's served.
+    disputed: bool = False
+    dispute: dict | None = None  # {primary_price, primary_source, secondary_price, secondary_source, divergence_pct}
 
 
 class Explain(BaseModel):
@@ -53,6 +69,11 @@ class Explain(BaseModel):
     sigma_daily_pct: float     # the stock's real daily volatility, %
     beta: float | None         # vs NIFTY (OLS on real candles)
     elapsed_seconds: float
+    # Path since you last looked (from the quote ring), because the endpoint can lie: a stock that ran
+    # +3% and came back to flat still HAPPENED.
+    peak_pct: float | None = None     # highest point since you looked, % vs then
+    trough_pct: float | None = None   # lowest point since you looked, % vs then
+    path_note: str | None = None      # e.g. "spiked +2.4% then retraced"
 
 
 class Activity(BaseModel):
@@ -78,6 +99,11 @@ class WatchRow(BaseModel):
     last_seen: Snapshot | None = None
     change_since_seen: Change | None = None
     signal: Signal | None = None   # present when we have a snapshot + real baselines
+    # Exposure (optional): what you hold, and what this move means in rupees.
+    quantity: float | None = None
+    exposure_inr: float | None = None   # quantity * current price
+    impact_inr: float | None = None     # quantity * (price now - price when you last looked)
+    snoozed_until: datetime | None = None  # held out of "needs attention" until then; still listed
 
 
 class ChangeRow(BaseModel):
@@ -92,6 +118,11 @@ class ChangeRow(BaseModel):
     cohort_id: int | None = None   # which of the user's cohorts this symbol belongs to
     peer_residual_z: float | None = None  # move vs the median of cohort peers, in sigma of that residual
     moving_alone: bool = False     # |peer_residual_z| >= 2: promote — this one is doing something its peers aren't
+    # Exposure: if you told us what you hold, we rank held symbols by rupees at stake.
+    quantity: float | None = None
+    impact_inr: float | None = None
+    # Snooze: still listed, but not counted as needing attention until this passes.
+    snoozed_until: datetime | None = None
 
 
 class CohortInfo(BaseModel):

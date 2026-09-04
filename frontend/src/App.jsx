@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, getToken } from "./api.js";
+import { api, getToken, API_BASE } from "./api.js";
 import Login from "./components/Login.jsx";
 import Digest from "./components/Digest.jsx";
 import Watchlist from "./components/Watchlist.jsx";
 import ModelPanel from "./components/ModelPanel.jsx";
+import FaultPanel from "./components/FaultPanel.jsx";
+import StatusPanel from "./components/StatusPanel.jsx";
 import { MarketPill } from "./components/Badges.jsx";
 
-const POLL_MS = 5000; // M1: client polling. SSE replaces this in M6 behind the same refresh seam.
+// Transport: Server-Sent Events push a "quotes updated" tick after every poll cycle, and we refetch
+// /state on each tick. Polling stays as the FALLBACK (slower once SSE is connected) — same refresh seam.
+const POLL_MS = 5000;
+const POLL_MS_WITH_SSE = 30000;
 
 export default function App() {
   const [authed, setAuthed] = useState(!!getToken());
@@ -25,7 +30,8 @@ export default function App() {
       setError(null);
     } catch (err) {
       if (err.status === 401) {
-        api.logout();
+        // token unknown or expired: forget it locally (no server call — it's already invalid)
+        try { localStorage.removeItem("token"); } catch { /* ignore */ }
         setAuthed(false);
       } else {
         setError(err.message || "Failed to load");
@@ -33,11 +39,33 @@ export default function App() {
     }
   }, []);
 
+  const [sse, setSse] = useState(false);
+
   useEffect(() => {
     if (!authed) return;
     refresh();
-    const id = setInterval(refresh, POLL_MS);
+    const id = setInterval(refresh, sse ? POLL_MS_WITH_SSE : POLL_MS);
     return () => clearInterval(id);
+  }, [authed, refresh, sse]);
+
+  // SSE: no user data on the stream, so no token in the URL; each tick just triggers an authed refetch.
+  useEffect(() => {
+    if (!authed || typeof EventSource === "undefined") return;
+    let es;
+    try {
+      es = new EventSource(`${API_BASE}/events`);
+    } catch {
+      return;
+    }
+    es.onopen = () => setSse(true);
+    es.onmessage = (e) => {
+      try {
+        const ev = JSON.parse(e.data);
+        if (ev.type === "quotes_updated") refresh();
+      } catch { /* ignore malformed */ }
+    };
+    es.onerror = () => setSse(false); // browser auto-reconnects; polling covers the gap
+    return () => { es.close(); setSse(false); };
   }, [authed, refresh]);
 
   async function handleAdd(symbol) {
@@ -56,6 +84,14 @@ export default function App() {
     await api.markAllSeen();
     await refresh();
   }
+  async function handleSetQuantity(symbol, quantity) {
+    await api.setQuantity(symbol, quantity);
+    await refresh();
+  }
+  async function handleSnooze(symbol, minutes) {
+    await api.snooze(symbol, minutes);
+    await refresh();
+  }
   // Demo: re-create "you last looked 15 minutes ago" from the simulator's deterministic history.
   async function handleRewind() {
     try {
@@ -66,8 +102,8 @@ export default function App() {
     }
   }
   const simulated = items.some((i) => i.provenance?.is_simulated);
-  function handleLogout() {
-    api.logout();
+  async function handleLogout() {
+    await api.logout();
     setAuthed(false);
     setItems([]);
     setChanges([]);
@@ -107,18 +143,22 @@ export default function App() {
             {error}
           </div>
         )}
-        <Digest changes={changes} onMarkAllSeen={handleMarkAll} />
-        <Watchlist items={items} onAdd={handleAdd} onSeen={handleSeen} onRemove={handleRemove} />
+        <Digest changes={changes} onMarkAllSeen={handleMarkAll} onSnooze={handleSnooze} />
+        <Watchlist items={items} onAdd={handleAdd} onSeen={handleSeen} onRemove={handleRemove} onSetQuantity={handleSetQuantity} />
         {simulated && items.length > 0 && (
-          <button
-            onClick={handleRewind}
-            className="mt-4 w-full text-xs text-slate-500 hover:text-slate-800 py-2"
-            title="Simulated data: re-create your snapshots as of 15 minutes ago to see 'While you were away' on demand"
-          >
-            ⟲ Demo: pretend I last looked 15 minutes ago
-          </button>
+          <>
+            <button
+              onClick={handleRewind}
+              className="mt-4 w-full text-xs text-slate-500 hover:text-slate-800 py-2"
+              title="Simulated data: re-create your snapshots as of 15 minutes ago to see 'While you were away' on demand"
+            >
+              ⟲ Demo: pretend I last looked 15 minutes ago
+            </button>
+            <FaultPanel symbols={items.map((i) => i.symbol)} onDone={refresh} />
+          </>
         )}
         <ModelPanel />
+        <StatusPanel />
       </main>
     </div>
   );

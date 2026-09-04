@@ -2,10 +2,17 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from ..auth import login_or_register
+from ..auth import CurrentUser, User, login_or_register, logout as _logout
 from ..models import LoginRequest, LoginResponse
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+@router.post("/logout")
+async def logout(user: User = CurrentUser) -> dict:
+    """Rotate the session token server-side — the old token stops working on every device."""
+    await _logout(user.id)
+    return {"ok": True}
 
 
 @router.post("/login", response_model=LoginResponse)

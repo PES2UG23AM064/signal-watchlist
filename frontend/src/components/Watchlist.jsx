@@ -1,8 +1,35 @@
 import { useState } from "react";
 import { inr, pct, displaySymbol } from "../format.js";
-import { FreshnessBadge, SourceBadge } from "./Badges.jsx";
+import { DisputedBadge, FreshnessBadge, QuarantineBadge, SourceBadge } from "./Badges.jsx";
 
-function Row({ item, onSeen, onRemove }) {
+// "How much do you hold?" — optional; held symbols rank by rupees at stake.
+function QtyInput({ item, onSetQuantity }) {
+  const [val, setVal] = useState(item.quantity ?? "");
+  async function commit() {
+    const n = val === "" ? null : Number(val);
+    if (n === item.quantity || (n === null && item.quantity == null)) return;
+    if (n !== null && (!Number.isFinite(n) || n < 0)) return;
+    await onSetQuantity(item.symbol, n);
+  }
+  return (
+    <span className="inline-flex items-center gap-1 text-[11px] text-slate-500">
+      hold
+      <input
+        value={val}
+        onChange={(e) => setVal(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+        inputMode="numeric"
+        placeholder="qty"
+        className="w-14 px-1.5 py-0.5 rounded border border-slate-200 text-[11px] text-slate-700 focus:outline-none focus:ring-1 focus:ring-brand/40"
+        title="Shares you hold (optional). Held symbols are ranked by rupees at stake."
+      />
+      {item.exposure_inr != null && <span className="text-slate-400">≈ {inr(item.exposure_inr)}</span>}
+    </span>
+  );
+}
+
+function Row({ item, onSeen, onRemove, onSetQuantity }) {
   const ch = item.change_since_seen;
   const up = ch && ch.direction === "up";
   return (
@@ -12,7 +39,10 @@ function Row({ item, onSeen, onRemove }) {
         <div className="flex items-center gap-1.5 mt-1 flex-wrap">
           <FreshnessBadge provenance={item.provenance} />
           <SourceBadge provenance={item.provenance} />
+          <QuarantineBadge provenance={item.provenance} />
+          <DisputedBadge provenance={item.provenance} />
         </div>
+        <div className="mt-1.5"><QtyInput item={item} onSetQuantity={onSetQuantity} /></div>
         {item.signal && item.signal.reasons.length > 0 && (
           <div className="flex flex-wrap gap-1 mt-1.5">
             {item.signal.reasons.map((r) => (
@@ -52,7 +82,7 @@ function Row({ item, onSeen, onRemove }) {
   );
 }
 
-export default function Watchlist({ items, onAdd, onSeen, onRemove }) {
+export default function Watchlist({ items, onAdd, onSeen, onRemove, onSetQuantity }) {
   const [symbol, setSymbol] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -96,7 +126,7 @@ export default function Watchlist({ items, onAdd, onSeen, onRemove }) {
       ) : (
         <div className="space-y-2.5">
           {items.map((item) => (
-            <Row key={item.symbol} item={item} onSeen={onSeen} onRemove={onRemove} />
+            <Row key={item.symbol} item={item} onSeen={onSeen} onRemove={onRemove} onSetQuantity={onSetQuantity} />
           ))}
         </div>
       )}

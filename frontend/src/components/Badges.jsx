@@ -41,6 +41,35 @@ export function SourceBadge({ provenance }) {
   );
 }
 
+// The quarantine made visible: bad ticks were rejected recently (stored for audit, never served).
+export function QuarantineBadge({ provenance }) {
+  const n = provenance?.quarantined_recent || 0;
+  if (!n) return null;
+  return (
+    <span
+      className="text-[11px] px-1.5 py-0.5 rounded bg-red-50 text-red-700"
+      title={`${n} bad tick${n > 1 ? "s" : ""} (impossible price, >20% single-tick jump, or future timestamp) were quarantined in the last 5 minutes. The price you see was never affected.`}
+    >
+      ⚠ {n} bad tick{n > 1 ? "s" : ""} quarantined
+    </span>
+  );
+}
+
+// Cross-source reconciliation made visible: a second feed disagrees with the served price. We show the
+// disagreement rather than silently picking one; the primary is what's served.
+export function DisputedBadge({ provenance }) {
+  if (!provenance?.disputed || !provenance.dispute) return null;
+  const d = provenance.dispute;
+  return (
+    <span
+      className="text-[11px] px-1.5 py-0.5 rounded bg-orange-50 text-orange-700"
+      title={`Served (${d.primary_source}): ₹${d.primary_price}. Second feed (${d.secondary_source}): ₹${d.secondary_price} — ${d.divergence_pct}% apart. The secondary is a cross-check and is never served as the price.`}
+    >
+      ⚠ disputed · 2nd feed ₹{Number(d.secondary_price).toLocaleString("en-IN")} ({d.divergence_pct}% off)
+    </span>
+  );
+}
+
 export function MarketPill({ market }) {
   if (!market) return null;
   return (

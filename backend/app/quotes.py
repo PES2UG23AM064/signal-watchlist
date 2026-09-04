@@ -71,29 +71,60 @@ def is_suspect(quote: Quote, prev_price: float | None, now: datetime | None = No
     return False
 
 
-async def record_quote(conn: asyncpg.Connection, quote: Quote, prev: "LatestQuote | None") -> bool:
-    """Append a quote (idempotent on (symbol, event_time)). Returns True if it passed sanity."""
+async def record_quote(conn: asyncpg.Connection, quote: Quote, prev: "LatestQuote | None",
+                       role: str = "primary") -> bool:
+    """Append a quote (idempotent on (symbol, event_time)). Returns True if it passed sanity.
+    role='secondary' quotes are a cross-check only — they are never served (see latest_quotes)."""
     suspect = is_suspect(quote, prev.price if prev else None, prev_event_time=prev.event_time if prev else None)
     await conn.execute(
         """
-        insert into quotes (symbol, price, volume, event_time, source, is_suspect)
-        values ($1, $2, $3, $4, $5, $6)
+        insert into quotes (symbol, price, volume, event_time, source, is_suspect, role)
+        values ($1, $2, $3, $4, $5, $6, $7)
         on conflict (symbol, event_time) do nothing
         """,
-        quote.symbol, quote.price, quote.volume, quote.event_time, quote.source, suspect,
+        quote.symbol, quote.price, quote.volume, quote.event_time, quote.source, suspect, role,
     )
     return not suspect
 
 
+async def disputes(conn: asyncpg.Connection, symbols: list[str], threshold_pct: float, window_s: int) -> dict[str, dict]:
+    """Cross-source reconciliation at READ time: where a secondary feed's latest quote (within the window)
+    diverges from the served primary beyond the threshold, the symbol is 'disputed'. We never silently
+    pick one — the primary is served AND the disagreement is shown."""
+    if not symbols:
+        return {}
+    rows = await conn.fetch(
+        """
+        with p as (
+          select distinct on (symbol) symbol, price, event_time, source from quotes
+          where symbol = any($1::text[]) and role='primary' and not is_suspect order by symbol, event_time desc),
+        s as (
+          select distinct on (symbol) symbol, price, event_time, source from quotes
+          where symbol = any($1::text[]) and role='secondary' and not is_suspect order by symbol, event_time desc)
+        select p.symbol, p.price as primary_price, p.source as primary_source,
+               s.price as secondary_price, s.source as secondary_source, s.event_time as secondary_time
+        from p join s using (symbol)
+        where s.event_time > now() - make_interval(secs => $2)
+          and abs(s.price - p.price) / p.price * 100 > $3
+        """,
+        symbols, float(window_s), float(threshold_pct),
+    )
+    return {r["symbol"]: {"primary_price": r["primary_price"], "primary_source": r["primary_source"],
+                          "secondary_price": r["secondary_price"], "secondary_source": r["secondary_source"],
+                          "divergence_pct": round(abs(r["secondary_price"] - r["primary_price"]) / r["primary_price"] * 100, 2)}
+            for r in rows}
+
+
 async def latest_quotes(conn: asyncpg.Connection, symbols: list[str]) -> dict[str, LatestQuote]:
-    """Latest NON-suspect quote per symbol (suspect rows are quarantined, never served as truth)."""
+    """Latest NON-suspect PRIMARY quote per symbol (suspect rows are quarantined and secondary-feed rows
+    are cross-checks — neither is ever served as truth)."""
     if not symbols:
         return {}
     rows = await conn.fetch(
         """
         select distinct on (symbol) symbol, price, volume, event_time, source
         from quotes
-        where symbol = any($1::text[]) and is_suspect = false
+        where symbol = any($1::text[]) and is_suspect = false and role = 'primary'
         order by symbol, event_time desc
         """,
         symbols,

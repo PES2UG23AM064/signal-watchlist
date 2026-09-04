@@ -11,6 +11,8 @@ take the app down.
 """
 from __future__ import annotations
 
+import asyncio
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Sequence
@@ -23,6 +25,30 @@ from .base import Quote
 _CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 _HEADERS = {"User-Agent": "Mozilla/5.0"}  # Yahoo rejects the default httpx UA
 _TIMEOUT = 15.0
+RATE_PER_MIN = 30        # be a good citizen on an unauthenticated endpoint
+MAX_CONCURRENCY = 4      # bounded fan-out: N symbols do not become N serialized round-trips, nor a burst
+
+
+class _TokenBucket:
+    """Simple async token bucket: `rate` tokens per minute, burst up to `capacity`."""
+
+    def __init__(self, rate_per_min: float, capacity: int) -> None:
+        self.rate = rate_per_min / 60.0
+        self.capacity = capacity
+        self.tokens = float(capacity)
+        self.updated = time.monotonic()
+        self._lock = asyncio.Lock()
+
+    async def take(self) -> None:
+        async with self._lock:
+            while True:
+                now = time.monotonic()
+                self.tokens = min(self.capacity, self.tokens + (now - self.updated) * self.rate)
+                self.updated = now
+                if self.tokens >= 1:
+                    self.tokens -= 1
+                    return
+                await asyncio.sleep((1 - self.tokens) / self.rate)
 
 
 class YahooError(Exception):
@@ -42,8 +68,13 @@ class Candle:
 class YahooProvider:
     name = "yahoo"
 
+    def __init__(self) -> None:
+        self._bucket = _TokenBucket(RATE_PER_MIN, capacity=RATE_PER_MIN)
+        self._sem = asyncio.Semaphore(MAX_CONCURRENCY)
+
     async def _chart(self, symbol: str, range_: str, interval: str) -> dict:
         url = _CHART.format(symbol=urlquote(symbol, safe=""))  # '^NSEI' -> '%5ENSEI'
+        await self._bucket.take()
         try:
             async with httpx.AsyncClient(timeout=_TIMEOUT, headers=_HEADERS) as client:
                 resp = await client.get(url, params={"range": range_, "interval": interval})
@@ -75,10 +106,14 @@ class YahooProvider:
         )
 
     async def get_quotes(self, symbols: Sequence[str]) -> dict[str, Quote]:
-        out: dict[str, Quote] = {}
-        for s in symbols:  # sequential on purpose: gentle on an unauthenticated endpoint
-            out[s] = await self.get_quote(s)
-        return out
+        """Bounded concurrency + the token bucket: fast enough that a poll cycle doesn't fall behind the
+        interval as the watchlist grows, gentle enough not to get rate-limited. A failing symbol raises
+        from here so the caller (composite/breaker) can fall back for it."""
+        async def one(s: str) -> tuple[str, Quote]:
+            async with self._sem:
+                return s, await self.get_quote(s)
+        results = await asyncio.gather(*(one(s) for s in symbols))
+        return dict(results)
 
     async def get_history(self, symbol: str, range_: str = "1y") -> list[Candle]:
         """Daily candles, oldest -> newest. Bars with a missing close are dropped."""

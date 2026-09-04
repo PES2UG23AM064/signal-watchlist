@@ -37,17 +37,59 @@ the code does today versus what is still planned.
   is from the Replay generator rather than a live feed).
 - **Sanity quarantine** — impossible/garbage quotes (≤0, negative volume, future timestamps, and
   single-tick jumps beyond NSE's 20% circuit band) are flagged and stored for audit but never served.
+- **Exposure weighting** — optionally record how many shares you hold. Groww is a broker: attention is
+  move × what you hold. Held symbols show the **rupee impact since you last looked** and are ranked by a
+  transparent attention score — unusualness × (1 + log₁₀(1 + |₹ impact| / 1000)), so ~×2 at ₹10k at stake.
+  Holdings *amplify* an unusual move; they never drown one out (tested).
+- **Co-movement cohorts** — see the ML section: pack moves fold into one card; the stock moving *alone* is
+  promoted.
+- **Fault injection you can press** (`POST /dev/inject`, and a "Break it on purpose" panel when data is
+  simulated) — sends a price-of-zero, a +35% tick, or a future-dated tick through the **real** ingestion
+  path and shows it quarantined with the served price unchanged, or pauses one symbol's upstream so you
+  can watch its badge go live → delayed → stale and recover. Resilience demonstrated, not described.
 - **Demo rewind** (`POST /dev/rewind`) — the simulator is a pure function of time, so "pretend I last
   looked 15 minutes ago" is reconstructed *exactly*, on demand.
 - **Tests** — 22 unit tests, including a **no-look-ahead test** on the feature code (written first) and
   sanity/market-hours invariants; plus an end-to-end smoke script (`scripts/smoke.py`).
 
-**Planned, NOT yet built (do not assume these exist in the code):**
-- Exposure weighting (rank by move × how much you hold) and per-signal acknowledge/decay.
-- Live **Yahoo** quotes as the primary feed with circuit-breaker fallback, and cross-source
-  "disputed" reconciliation. (Yahoo is used today for the real candle history, not live ticks.)
-- A live fault-injection toggle in the UI.
-- Horizontal scale-out (see trade-offs) — designed, not implemented. Real-time push (SSE) — cut on purpose.
+- **Live feed with a circuit breaker** (`MARKET_PROVIDER=composite`) — live Yahoo quotes while NSE is
+  open; on failure the breaker trips (3 strikes → 60s open → half-open trial) and every quote falls back to
+  the simulator **without the app ever erroring** — and the source badge tells the truth about which path
+  served it. Outside market hours it routes to the simulator (Yahoo is static then). The deployed demo runs
+  `replay` on purpose: reproducible, and the rewind only makes sense when the simulator is the active source
+  (the endpoint refuses otherwise).
+- **Observability** (`GET /status` + a "System health" panel) — provider route and breaker state, poll
+  cycle time vs interval (with a falling-behind warning), per-symbol freshness age, quarantines in the
+  last hour, simulated outages.
+- **Demo script + Q&A prep:** see [DEMO.md](DEMO.md).
+
+- **Poller leader election** — a Postgres session-level advisory lock on a dedicated connection means
+  exactly one instance writes even if several run; a follower takes over within one interval if the leader
+  dies. This makes the dual-writer incident structurally impossible. (Needs Supabase's session pooler on
+  5432 — the transaction pooler on 6543 recycles the session the lock lives in.) Tested across two sessions.
+- **Cross-source reconciliation** — an optional second *real* feed (Twelve Data, `TWELVEDATA_API_KEY`) is
+  recorded as `role='secondary'`: a cross-check that can **never** become the served price. When it
+  diverges from the served primary beyond a threshold within the window, the symbol shows **"disputed"**
+  with both prices — we never silently pick one. The "Break it on purpose" panel can inject a disagreeing
+  second feed to demonstrate it; a divergence within tolerance is not a dispute (tested).
+- **Path since you looked** — from the quote ring: *"spiked +2.4% then retraced (3.1σ path move)"* when
+  the path was an event the endpoint would have hidden. (INFY's scripted scenario exists for exactly this.)
+- **Snooze** — hold a symbol out of "needs your attention" for an hour; it stays listed, nothing is hidden.
+- **Real-time push (SSE)** over an in-process event bus: the poller publishes a tick after each cycle;
+  clients refetch `/state`. The stream carries **no user data** (so no token in any URL) and polling stays
+  as the fallback transport. Swapping the bus for Postgres `LISTEN/NOTIFY` is the multi-instance step.
+- **Auth lifecycle** — tokens expire (30 days) and are rotated on every login; logout rotates server-side
+  (a copied token dies everywhere); five wrong PINs lock the account for 15 minutes.
+- **Rate limiting** — the live feed runs behind a token bucket (30/min) with bounded concurrency.
+- **Tests** — 39 unit tests + **4 DB-backed integration tests** (`INTEGRATION=1 pytest tests/integration`):
+  quarantine/roles/disputes, the stale-reference escape hatch, the monotonic watermark, and leader-lock
+  exclusivity across two sessions — the invariants this README claims, checked against a real Postgres.
+
+**Not built, on purpose:**
+- LLM narration (can't be backtested; it would undermine the auditable definition), changepoint/EWMA/
+  volume-seasonality methods (redundant or circular here — see DEMO.md for the one-line reasons),
+  per-*signal* acknowledge (symbol-level Seen + snooze cover the inbox semantics), and Postgres
+  `LISTEN/NOTIFY` fan-out (the bus interface is ready; one process doesn't need it yet).
 
 ## How "meaningful" is decided — and what we tested
 

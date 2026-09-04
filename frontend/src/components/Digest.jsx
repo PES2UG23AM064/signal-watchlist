@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { inr, pct, displaySymbol } from "../format.js";
-import { FreshnessBadge, SourceBadge } from "./Badges.jsx";
+import { DisputedBadge, FreshnessBadge, QuarantineBadge, SourceBadge } from "./Badges.jsx";
 
 // The one learned tag: P(entering an active period). Only shown when clearly elevated vs the ~31% base
 // rate, and always framed as an outlook on ACTIVITY, never direction.
@@ -28,6 +28,9 @@ function Explain({ e, peerZ }) {
     ["52-week level", e.crossed ? `crossed its ${e.crossed}` : "not crossed"],
   ];
   if (peerZ != null) rows.push(["vs its co-movement peers", `${Math.abs(peerZ).toFixed(1)}σ ${peerZ >= 0 ? "above" : "below"} the pack`]);
+  if (e.peak_pct != null && e.trough_pct != null)
+    rows.push(["Path since you looked", `${e.trough_pct >= 0 ? "+" : ""}${e.trough_pct.toFixed(2)}% … ${e.peak_pct >= 0 ? "+" : ""}${e.peak_pct.toFixed(2)}%`,
+      e.path_note ? `(${e.path_note})` : "(the endpoint is the whole story)"]);
   return (
     <div className="mt-3 pt-3 border-t border-slate-100 text-xs space-y-1.5">
       {rows.map(([k, v, note]) => (
@@ -107,10 +110,11 @@ function GroupCard({ members, renderCard }) {
   );
 }
 
-export default function Digest({ changes, onMarkAllSeen }) {
+export default function Digest({ changes, onMarkAllSeen, onSnooze }) {
   const [open, setOpen] = useState(null);
   const count = changes.filter((c) => c.signal.is_meaningful).length;
-  const { alone, groups, singles } = groupChanges(changes);
+  const snoozed = changes.filter((c) => c.snoozed_until);
+  const { alone, groups, singles } = groupChanges(changes.filter((c) => !c.snoozed_until));
 
   if (changes.length === 0) {
     return (
@@ -143,7 +147,7 @@ export default function Digest({ changes, onMarkAllSeen }) {
                   className="text-[11px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-medium"
                   title="This stock is moving very differently from the symbols it usually moves with — this is about IT, not the market."
                 >
-                  moving alone
+                  {c.headline.includes("diverging") ? "diverging from its pair" : "moving alone"}
                 </span>
               )}
             </div>
@@ -159,13 +163,40 @@ export default function Digest({ changes, onMarkAllSeen }) {
           <div className="flex items-center gap-1.5 flex-wrap">
             <FreshnessBadge provenance={c.provenance} />
             <SourceBadge provenance={c.provenance} />
+            <QuarantineBadge provenance={c.provenance} />
+            <DisputedBadge provenance={c.provenance} />
             <ActivityTag activity={sig.activity} />
           </div>
-          <button onClick={() => setOpen(isOpen ? null : c.symbol)} className="text-xs text-slate-400 hover:text-slate-700 shrink-0">
-            {isOpen ? "hide" : "why?"}
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            {onSnooze && (
+              c.snoozed_until ? (
+                <button onClick={() => onSnooze(c.symbol, 0)} className="text-xs text-slate-400 hover:text-slate-700" title="Stop snoozing">
+                  unsnooze
+                </button>
+              ) : (
+                <button onClick={() => onSnooze(c.symbol, 60)} className="text-xs text-slate-400 hover:text-slate-700" title="Hold out of 'needs attention' for an hour — it stays listed">
+                  snooze 1h
+                </button>
+              )
+            )}
+            <button onClick={() => setOpen(isOpen ? null : c.symbol)} className="text-xs text-slate-400 hover:text-slate-700">
+              {isOpen ? "hide" : "why?"}
+            </button>
+          </div>
         </div>
-        <div className="text-xs text-slate-400 mt-1.5">you last saw {inr(c.last_seen.price)}</div>
+        {c.snoozed_until && (
+          <div className="text-[11px] text-slate-400 mt-1">
+            snoozed until {new Date(c.snoozed_until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} — still listed, not counted
+          </div>
+        )}
+        <div className="text-xs text-slate-400 mt-1.5 flex items-center justify-between gap-2">
+          <span>you last saw {inr(c.last_seen.price)}</span>
+          {c.impact_inr != null && (
+            <span className={`font-medium ${c.impact_inr >= 0 ? "text-up" : "text-down"}`} title={`${c.quantity} held × price change since you looked`}>
+              {c.impact_inr >= 0 ? "+" : "−"}{inr(Math.abs(c.impact_inr))} on your holding
+            </span>
+          )}
+        </div>
 
         {isOpen && <Explain e={sig.explain} peerZ={c.peer_residual_z} />}
       </div>
@@ -199,6 +230,12 @@ export default function Digest({ changes, onMarkAllSeen }) {
         {alone.map(renderCard)}
         {groups.map((g, i) => <GroupCard key={`g${i}`} members={g} renderCard={renderCard} />)}
         {singles.map(renderCard)}
+        {snoozed.length > 0 && (
+          <div className="pt-1">
+            <div className="text-[11px] uppercase tracking-wide text-slate-400 mb-1.5">snoozed · {snoozed.length}</div>
+            <div className="space-y-2.5 opacity-60">{snoozed.map(renderCard)}</div>
+          </div>
+        )}
       </div>
     </section>
   );
