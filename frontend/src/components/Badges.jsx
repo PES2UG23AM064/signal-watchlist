@@ -6,7 +6,8 @@ import { timeAgo } from "../format.js";
 // One shape (.chip), colour carries the meaning, copy stays to two or three words.
 
 const FRESH = {
-  fresh: { cls: "chip-fresh", dot: "bg-fresh", word: "live" },
+  // "fresh", not "live": this axis is the quote's AGE. Whether it's a real feed is the source axis.
+  fresh: { cls: "chip-fresh", dot: "bg-fresh", word: "fresh" },
   delayed: { cls: "chip-delayed", dot: "bg-delayed", word: "delayed" },
   stale: { cls: "chip-stale", dot: "bg-stale", word: "stale" },
   no_data: { cls: "chip-neutral", dot: null, word: "no data" },

@@ -3,8 +3,11 @@
 Explicit "create account" vs "sign in" (a typo in your email must never silently create a second, empty
 account). Deliberately not OAuth (documented in README). Lifecycle (a fintech panel will ask):
   * passwords are bcrypt-hashed (cost 12); never stored or logged in clear;
-  * tokens EXPIRE (TOKEN_TTL_DAYS) and are re-issued on every login (rotation);
-  * logout ROTATES the token server-side, so a copied token dies with the session on every device;
+  * one session PER DEVICE (sessions table, tokens stored hashed): signing in on your phone does not
+    sign your laptop out — the watchlist follows you, and so does being signed in;
+  * sessions EXPIRE (TOKEN_TTL_DAYS from issue);
+  * logout DELETES that session server-side, so a copied token dies everywhere it was copied, while the
+    user's other devices stay signed in (`everywhere=true` ends them all);
   * guessing is THROTTLED: after MAX_ATTEMPTS failures the account locks for LOCK_MINUTES;
   * sign-in errors are deliberately generic ("invalid email or password") so the endpoint does not
     reveal which emails have accounts.
@@ -13,6 +16,7 @@ streams and other requests riding on it), and no pooled DB connection is held wh
 """
 from __future__ import annotations
 
+import hashlib
 import re
 import secrets
 from dataclasses import dataclass
@@ -60,6 +64,21 @@ def _new_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+def _token_hash(token: str) -> str:
+    """Sessions store a SHA-256 of the token: the table can leak without leaking logins."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+async def _open_session(conn, user_id: str) -> str:
+    """Issue a token for THIS device. Other devices' sessions are untouched — that is the whole point.
+    Expired sessions for the user are swept here so the table cannot grow without bound."""
+    token = _new_token()
+    await conn.execute("delete from sessions where user_id=$1 and issued_at < now() - make_interval(days => $2)",
+                       user_id, TOKEN_TTL_DAYS)
+    await conn.execute("insert into sessions (token_hash, user_id) values ($1, $2)", _token_hash(token), user_id)
+    return token
+
+
 def normalize_email(raw: str) -> str:
     email = (raw or "").strip().lower()
     if not email:
@@ -87,20 +106,20 @@ async def register(email: str, password: str, display_name: str | None = None) -
     email = normalize_email(email)
     name = validate_new_credentials(email, password, display_name)
     password_hash = await anyio.to_thread.run_sync(_hash, password)
-    token = _new_token()
     async with db.pool().acquire() as conn:
         row = await conn.fetchrow(
-            "insert into users (email, password_hash, display_name, session_token, token_issued_at) "
-            "values ($1, $2, $3, $4, now()) on conflict (email) do nothing returning id",
-            email, password_hash, name, token,
+            "insert into users (email, password_hash, display_name, token_issued_at) "
+            "values ($1, $2, $3, now()) on conflict (email) do nothing returning id",
+            email, password_hash, name,
         )
-    if row is None:
-        raise HTTPException(status.HTTP_409_CONFLICT, "an account with this email already exists — sign in instead")
+        if row is None:
+            raise HTTPException(status.HTTP_409_CONFLICT, "an account with this email already exists — sign in instead")
+        token = await _open_session(conn, row["id"])
     return Session(token=token, user=User(id=str(row["id"]), email=email, display_name=name))
 
 
 async def login(email: str, password: str) -> Session:
-    """Verify credentials and issue a FRESH token (rotation invalidates the previous one)."""
+    """Verify credentials and open a session for this device. Sessions on other devices stay valid."""
     email = normalize_email(email)
     if not password:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "password is required")
@@ -126,10 +145,8 @@ async def login(email: str, password: str) -> Session:
             if lock:
                 raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, f"too many attempts; locked for {LOCK_MINUTES} min")
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid email or password")
-        token = _new_token()
-        await conn.execute(
-            "update users set session_token=$2, token_issued_at=now(), failed_attempts=0, locked_until=null where id=$1",
-            row["id"], token)
+        await conn.execute("update users set failed_attempts=0, locked_until=null where id=$1", row["id"])
+        token = await _open_session(conn, row["id"])
     return Session(token=token, user=User(id=str(row["id"]), email=email, display_name=row["display_name"]))
 
 
@@ -137,25 +154,35 @@ async def login(email: str, password: str) -> Session:
 _DUMMY_HASH = _hash(secrets.token_urlsafe(16))
 
 
-async def logout(user_id: str) -> None:
-    """Server-side logout: rotate the token so the old one is dead everywhere, not just in this browser."""
+async def logout(user_id: str, token: str, everywhere: bool = False) -> None:
+    """Server-side logout: THIS session is deleted, so the token is dead everywhere it was copied — but
+    the user's other devices stay signed in. `everywhere` ends every session of the account."""
     async with db.pool().acquire() as conn:
-        await conn.execute("update users set session_token=$2, token_issued_at=now() where id=$1", user_id, _new_token())
+        if everywhere:
+            await conn.execute("delete from sessions where user_id=$1", user_id)
+        else:
+            await conn.execute("delete from sessions where user_id=$1 and token_hash=$2", user_id, _token_hash(token))
 
 
-async def current_user(authorization: str | None = Header(default=None)) -> User:
-    """FastAPI dependency: resolve the bearer token to a user, or 401 (unknown OR expired)."""
+async def current_session(authorization: str | None = Header(default=None)) -> Session:
+    """FastAPI dependency: resolve the bearer token to (user, token), or 401 (unknown OR expired)."""
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "missing bearer token")
     token = authorization.split(" ", 1)[1].strip()
     async with db.pool().acquire() as conn:
         row = await conn.fetchrow(
-            "select id, email, display_name, token_issued_at from users where session_token=$1", token)
+            "select u.id, u.email, u.display_name, s.issued_at from sessions s join users u on u.id = s.user_id "
+            "where s.token_hash=$1", _token_hash(token))
     if row is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid token")
-    if row["token_issued_at"] < datetime.now(UTC) - timedelta(days=TOKEN_TTL_DAYS):
+    if row["issued_at"] < datetime.now(UTC) - timedelta(days=TOKEN_TTL_DAYS):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "session expired; sign in again")
-    return User(id=str(row["id"]), email=row["email"], display_name=row["display_name"])
+    return Session(token=token, user=User(id=str(row["id"]), email=row["email"], display_name=row["display_name"]))
+
+
+async def current_user(authorization: str | None = Header(default=None)) -> User:
+    return (await current_session(authorization)).user
 
 
 CurrentUser = Depends(current_user)
+CurrentSession = Depends(current_session)

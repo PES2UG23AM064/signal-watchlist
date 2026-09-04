@@ -35,12 +35,12 @@ export default function Legend({ open, onClose }) {
             chip={
               <span className="chip chip-fresh">
                 <span className="w-1.5 h-1.5 rounded-full bg-fresh" />
-                live <span className="num text-ink-4 font-normal">12s ago</span>
+                fresh <span className="num text-ink-4 font-normal">12s ago</span>
               </span>
             }
           >
-            The price is current. The number is how long ago the exchange stamped it — not when we drew the
-            screen.
+            The price is under 20 seconds old. The number is how long ago the source stamped it — not when we
+            drew the screen. Fresh says how <em>old</em> it is, not where it's from — that's the source label below.
           </Item>
           <Item
             chip={

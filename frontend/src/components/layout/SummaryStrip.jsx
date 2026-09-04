@@ -36,7 +36,7 @@ export default function SummaryStrip({ items, changes, loading }) {
     );
   }
 
-  const dataLabel = { fresh: "All live", delayed: "Delayed", stale: "Stale", no_data: "No data" }[worst] || "—";
+  const dataLabel = { fresh: "All fresh", delayed: "Delayed", stale: "Stale", no_data: "No data" }[worst] || "—";
 
   return (
     <div className={grid}>
@@ -77,13 +77,15 @@ export default function SummaryStrip({ items, changes, loading }) {
       <div className={tile}>
         <Stat
           label="Data"
-          value={dataLabel}
+          value={items.length ? dataLabel : "—"}
           sub={
-            staleCount
+            !items.length
+              ? "nothing to fetch yet"
+              : staleCount
               ? `${staleCount} not fresh${simulated ? " · simulated" : ""}`
               : simulated ? "simulated feed" : "live feed"
           }
-          tone={worst === "fresh" ? "default" : "muted"}
+          tone={items.length && worst === "fresh" ? "default" : "muted"}
           title="Worst freshness across your watchlist. Every price on this page carries its own age badge."
         />
       </div>

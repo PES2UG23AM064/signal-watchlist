@@ -36,10 +36,10 @@ async def main() -> None:
     print(f"poll_once polled {n} unique symbols")
 
     wl = await services.list_watchlist(uid)
-    print("\nwatchlist (pre-seen):")
+    print("\nwatchlist (just added):")
     for r in wl:
         print(f"  {r.symbol:14} {str(r.price):>10}  fresh={r.provenance.freshness} src={r.provenance.source} baseline={r.has_baseline}")
-    assert all(not r.has_baseline for r in wl), "expected no baselines before mark_seen"
+    assert all(r.has_baseline for r in wl), "adding a symbol is looking at it: expected a baseline from the add"
     assert all(r.price is not None for r in wl), "expected a quote for every symbol after add+poll"
     assert all(r.provenance.freshness == "fresh" for r in wl), "freshly polled quotes should read fresh"
 

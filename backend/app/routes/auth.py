@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, status
 
 from .. import auth
-from ..auth import CurrentUser, User
+from ..auth import CurrentSession, CurrentUser, User
 from ..models import AuthResponse, LoginRequest, MeResponse, RegisterRequest
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -34,7 +34,8 @@ async def me(user: User = CurrentUser) -> MeResponse:
 
 
 @router.post("/logout")
-async def logout(user: User = CurrentUser) -> dict:
-    """Rotate the session token server-side — the old token stops working on every device."""
-    await auth.logout(user.id)
+async def logout(everywhere: bool = False, session: auth.Session = CurrentSession) -> dict:
+    """End THIS device's session server-side (the token dies everywhere it was copied). Other devices stay
+    signed in unless `everywhere=true`."""
+    await auth.logout(session.user.id, session.token, everywhere=everywhere)
     return {"ok": True}

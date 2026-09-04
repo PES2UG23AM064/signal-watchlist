@@ -144,6 +144,10 @@ async def add_symbol(user_id: str, raw_symbol: str) -> str:
             await _sync_replay_groups(conn)  # a new symbol may join (or form) a pack
     await _ensure_quote(symbol)
     await _ensure_quote(INDEX_SYMBOL)
+    # Adding a symbol IS looking at it: the price on screen at this moment becomes the first baseline, so
+    # "what changed since I last looked" works from the first return visit — no separate "Seen" needed.
+    # Idempotent re-adds go through the monotonic guard, so they can never move an existing baseline back.
+    await mark_seen(user_id, symbol)
     return symbol
 
 
