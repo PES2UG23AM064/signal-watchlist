@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, HTTPException, status
 
 from .. import services
 from ..auth import CurrentUser, User
@@ -29,14 +29,16 @@ async def remove_symbol(symbol: str, user: User = CurrentUser) -> dict:
 @router.patch("/{symbol}/quantity")
 async def set_quantity(symbol: str, body: SetQuantityRequest, user: User = CurrentUser) -> dict:
     """Record how much of this symbol you hold (or clear it). Held symbols rank by rupees at stake."""
-    await services.set_quantity(user.id, symbol, body.quantity)
+    if not await services.set_quantity(user.id, symbol, body.quantity):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "symbol is not on your watchlist")
     return {"ok": True}
 
 
 @router.post("/{symbol}/snooze")
 async def snooze(symbol: str, minutes: int | None = 60, user: User = CurrentUser) -> dict:
     """Hold this symbol out of 'needs your attention' for N minutes (minutes=0 clears). Never hides it."""
-    await services.snooze(user.id, symbol, minutes or None)
+    if not await services.snooze(user.id, symbol, minutes or None):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "symbol is not on your watchlist")
     return {"ok": True}
 
 

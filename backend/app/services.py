@@ -2,23 +2,24 @@
 
 Reads serve quotes PERSISTED by the shared poller (fan-in: one upstream poll per symbol, many readers).
 For each watched symbol with a snapshot AND real baselines we compute the live signal via app.scoring —
-the SAME feature definitions the backtest validated — and attach reasons, a descriptive unusualness
-rank, the numbers behind it (explainability), the one learned tag (activity outlook), co-movement
-cohort context, and — if the user told us what they hold — the rupee impact.
+the SAME feature definitions the backtest ran — and attach plain-English reasons, a descriptive
+unusualness rank, the numbers behind it (explainability), co-movement cohort context, and — if the user
+told us what they hold — the rupee impact.
 
 Integrity notes:
   * mark_seen's monotonic watermark: the snapshot only ever advances forward, so a stale or concurrent
     "mark seen" (e.g. a second device) can never move a user's baseline backward.
   * We never hold a pooled DB connection across an upstream network fetch.
-  * The model never gates visibility: every moved symbol still renders; flags come from thresholds.
+  * Nothing gates visibility: every moved symbol still renders; flags come from thresholds.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import numpy as np
@@ -26,14 +27,23 @@ import numpy as np
 from . import baselines, cohorts, db, poller, quotes, scoring
 from .baselines import INDEX_SYMBOL, Baselines
 from .config import settings
-from .models import (Activity, Change, ChangeRow, CohortInfo, Explain, Provenance, Signal, Snapshot, WatchRow)
+from .models import (
+    Change,
+    ChangeRow,
+    CohortInfo,
+    Explain,
+    Provenance,
+    Signal,
+    Snapshot,
+    WatchRow,
+)
 from .providers import Quote, get_provider, replay_instance
 from .quotes import LatestQuote
 from .symbols import normalize
 
 log = logging.getLogger("services")
 
-QUARANTINE_WINDOW = "5 minutes"
+QUARANTINE_WINDOW_S = 300  # "bad ticks rejected recently" = last 5 minutes
 
 
 def compute_change(seen_price: float, current_price: float) -> Change:
@@ -53,6 +63,16 @@ def _provenance(lq: LatestQuote | None, now: datetime, quarantined: int = 0) -> 
     )
 
 
+def _snap_time(snap: dict) -> datetime | None:
+    """A snapshot we wrote ourselves — but a malformed row must degrade to 'no snapshot for this symbol',
+    never 500 the whole digest."""
+    try:
+        return datetime.fromisoformat(snap["event_time"])
+    except (KeyError, TypeError, ValueError):
+        log.warning("malformed snapshot ignored: %r", snap)
+        return None
+
+
 # --------------------------------------------------------------------------- replay <- real baselines
 
 def _sync_replay_profile(b: Baselines) -> None:
@@ -63,13 +83,25 @@ def _sync_replay_profile(b: Baselines) -> None:
         rp.set_profile(b.symbol, anchor=b.last_close, sigma_daily=b.ret_stdev_daily, avg_vol=b.avg_volume_20d)
 
 
+async def _sync_replay_groups(conn: asyncpg.Connection) -> None:
+    """Tell the simulator which watched symbols the REAL candles say move together, so its 'sector days'
+    hit the same packs the app's cohort cards are built from (nothing is invented: same model, same data)."""
+    rp = replay_instance()
+    if rp is None:
+        return
+    syms = [r["symbol"] for r in await conn.fetch("select distinct symbol from watchlist_items")]
+    model = await _cohort_model(conn, syms) if len(syms) >= 2 else None
+    rp.set_groups([g for g in model.cohorts if len(g) > 1] if model else [])
+
+
 async def sync_replay_profiles() -> None:
-    """On startup: give the simulator real anchors/sigmas for everything watched (+ the index)."""
+    """On startup: give the simulator real anchors/sigmas for everything watched (+ the index), and its packs."""
     async with db.pool().acquire() as conn:
         syms = [r["symbol"] for r in await conn.fetch("select distinct symbol from watchlist_items")]
         bs = await baselines.get_baselines(conn, syms + [INDEX_SYMBOL])
-    for b in bs.values():
-        _sync_replay_profile(b)
+        for b in bs.values():
+            _sync_replay_profile(b)
+        await _sync_replay_groups(conn)
 
 
 # --------------------------------------------------------------------------- quotes bootstrap
@@ -80,7 +112,7 @@ async def _ensure_quote(symbol: str) -> None:
     down is left alone so its data honestly ages."""
     if poller.is_paused(symbol):
         return
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     async with db.pool().acquire() as conn:
         lq = (await quotes.latest_quotes(conn, [symbol])).get(symbol)
     if lq is not None and lq.freshness(now) == "fresh":
@@ -92,7 +124,8 @@ async def _ensure_quote(symbol: str) -> None:
         return
     async with db.pool().acquire() as conn:
         prev = await quotes.latest_quotes(conn, [symbol])
-        await quotes.record_quote(conn, q, prev.get(symbol))
+        anchor = (await baselines.get_baselines(conn, [symbol])).get(symbol)
+        await quotes.record_quote(conn, q, prev.get(symbol), anchor=anchor.last_close if anchor else None)
 
 
 # --------------------------------------------------------------------------- watchlist CRUD
@@ -107,6 +140,8 @@ async def add_symbol(user_id: str, raw_symbol: str) -> str:
     b = await baselines.ensure_baselines(symbol)
     if b is not None:
         _sync_replay_profile(b)
+        async with db.pool().acquire() as conn:
+            await _sync_replay_groups(conn)  # a new symbol may join (or form) a pack
     await _ensure_quote(symbol)
     await _ensure_quote(INDEX_SYMBOL)
     return symbol
@@ -119,13 +154,19 @@ async def remove_symbol(user_id: str, symbol: str) -> None:
         await conn.execute("delete from read_state where user_id=$1 and symbol=$2", user_id, symbol)
 
 
-async def set_quantity(user_id: str, symbol: str, quantity: float | None) -> None:
+def _updated(status: str) -> bool:
+    """asyncpg returns e.g. 'UPDATE 1' — False means the row wasn't the caller's (route -> 404)."""
+    return not status.endswith(" 0")
+
+
+async def set_quantity(user_id: str, symbol: str, quantity: float | None) -> bool:
     symbol = normalize(symbol)
     if quantity is not None and quantity < 0:
         quantity = None
     async with db.pool().acquire() as conn:
-        await conn.execute("update watchlist_items set quantity=$3 where user_id=$1 and symbol=$2",
-                           user_id, symbol, quantity)
+        status = await conn.execute("update watchlist_items set quantity=$3 where user_id=$1 and symbol=$2",
+                                    user_id, symbol, quantity)
+    return _updated(status)
 
 
 async def _symbols_for(conn: asyncpg.Connection, user_id: str) -> list[str]:
@@ -140,7 +181,12 @@ async def _holdings(conn: asyncpg.Connection, user_id: str) -> dict[str, float |
 
 async def _read_state(conn: asyncpg.Connection, user_id: str) -> dict[str, dict]:
     rows = await conn.fetch("select symbol, snapshot_json from read_state where user_id=$1", user_id)
-    return {r["symbol"]: json.loads(r["snapshot_json"]) for r in rows}
+    out = {}
+    for r in rows:
+        snap = json.loads(r["snapshot_json"])
+        if _snap_time(snap) is not None and isinstance(snap.get("price"), int | float) and snap["price"] > 0:
+            out[r["symbol"]] = snap
+    return out
 
 
 async def _quarantined_recent(conn: asyncpg.Connection, symbols: list[str]) -> dict[str, int]:
@@ -148,34 +194,45 @@ async def _quarantined_recent(conn: asyncpg.Connection, symbols: list[str]) -> d
     if not symbols:
         return {}
     rows = await conn.fetch(
-        f"select symbol, count(*) as n from quotes where is_suspect and symbol = any($1::text[]) "
-        f"and event_time > now() - interval '{QUARANTINE_WINDOW}' group by symbol", symbols)
+        "select symbol, count(*) as n from quotes where is_suspect and symbol = any($1::text[]) "
+        "and event_time > now() - make_interval(secs => $2) group by symbol", symbols, float(QUARANTINE_WINDOW_S))
     return {r["symbol"]: int(r["n"]) for r in rows}
 
 
 # --------------------------------------------------------------------------- the signal
 
-PEAK_FLAG_SIGMA = 2.0   # an excursion this large (in sigma) is reported even if the endpoint came back
+PEAK_FLAG_SIGMA = 2.0         # an excursion this large (in sigma) is reported even if the endpoint came back
 PEAK_RETRACE_MAX_SIGMA = 1.0  # ...and "retraced" means the endpoint ended within this much
+PATH_BONUS_CAP = 3.0          # a retraced spike ranks like an event, but a wild wick can't dominate the digest
 
 
 async def _peaks_since(conn: asyncpg.Connection, seen: dict[str, dict]) -> dict[str, tuple[float, float]]:
     """(max, min) served price per symbol since the user's snapshot time — from the quote ring, capped by
-    the retention window. Uses the (symbol, event_time) index; one small query per watched symbol."""
-    out: dict[str, tuple[float, float]] = {}
-    for sym, snap in seen.items():
-        since = datetime.fromisoformat(snap["event_time"])
-        r = await conn.fetchrow(
-            "select max(price) as hi, min(price) as lo from quotes "
-            "where symbol=$1 and not is_suspect and event_time > $2", sym, since)
-        if r and r["hi"] is not None:
-            out[sym] = (float(r["hi"]), float(r["lo"]))
-    return out
+    the retention window. ONE round-trip for all symbols: the per-symbol snapshot times are passed as
+    parallel arrays and joined via unnest (a per-symbol query was an N+1 that made /state take seconds
+    at 30 symbols when the DB is in another region). Uses the (symbol, event_time) index."""
+    if not seen:
+        return {}
+    syms = list(seen)
+    sinces = [_snap_time(seen[s]) for s in syms]  # _read_state already dropped malformed rows
+    rows = await conn.fetch(
+        """
+        select q.symbol, max(q.price) as hi, min(q.price) as lo
+        from unnest($1::text[], $2::timestamptz[]) as v(symbol, since)
+        join quotes q on q.symbol = v.symbol and q.event_time > v.since
+        where not q.is_suspect and q.role = 'primary'
+        group by q.symbol
+        """,
+        syms, sinces,
+    )
+    return {r["symbol"]: (float(r["hi"]), float(r["lo"])) for r in rows if r["hi"] is not None}
 
 
 def _build_signal(lq: LatestQuote, snap: dict, b: Baselines, idx_now: float | None,
                   peaks: tuple[float, float] | None = None) -> Signal | None:
-    seen_time = datetime.fromisoformat(snap["event_time"])
+    seen_time = _snap_time(snap)
+    if seen_time is None:
+        return None
     elapsed = max(0.0, (lq.event_time - seen_time).total_seconds())
     f = scoring.live_features(
         price_now=lq.price, price_seen=snap["price"],
@@ -200,13 +257,12 @@ def _build_signal(lq: LatestQuote, snap: dict, b: Baselines, idx_now: float | No
         excursion = max(abs(peak_pct), abs(trough_pct)) / 100.0
         sigma_eff = f.sigma_used
         if sigma_eff > 0 and excursion / sigma_eff >= PEAK_FLAG_SIGMA and f.abs_resid_z < PEAK_RETRACE_MAX_SIGMA:
-            direction = "spiked" if abs(peak_pct) >= abs(trough_pct) else "dropped"
-            ext = peak_pct if direction == "spiked" else trough_pct
-            path_note = f"{direction} {ext:+.1f}% then retraced ({excursion / sigma_eff:.1f}σ path move)"
-            reasons.append(path_note)
-            path_bonus = excursion / sigma_eff   # the path WAS the event; rank it like one
+            spiked = abs(peak_pct) >= abs(trough_pct)
+            ext = peak_pct if spiked else trough_pct
+            reasons.append("Spiked, then came most of the way back" if spiked else "Dropped, then came most of the way back")
+            path_note = f"{'spiked' if spiked else 'dropped'} {ext:+.1f}% then retraced ({excursion / sigma_eff:.1f}σ path move)"
+            path_bonus = min(excursion / sigma_eff, PATH_BONUS_CAP)   # the path WAS the event; rank it like one
 
-    out = scoring.activity_outlook(f)
     return Signal(
         reasons=reasons,
         is_meaningful=bool(reasons),
@@ -218,25 +274,34 @@ def _build_signal(lq: LatestQuote, snap: dict, b: Baselines, idx_now: float | No
             beta=round(b.beta, 2) if b.beta is not None else None, elapsed_seconds=round(elapsed, 0),
             peak_pct=peak_pct, trough_pct=trough_pct, path_note=path_note,
         ),
-        activity=Activity(probability=round(out[0], 3), version=out[1]) if out else None,
     )
 
 
-async def list_watchlist(user_id: str) -> list[WatchRow]:
-    now = datetime.now(timezone.utc)
+async def _q(fn, *args):
+    """Run one read on its own pooled connection — lets independent reads proceed concurrently."""
     async with db.pool().acquire() as conn:
-        holdings = await _holdings(conn, user_id)
-        symbols = list(holdings)
-        if not symbols:
-            return []
-        latest = await quotes.latest_quotes(conn, symbols + [INDEX_SYMBOL])
-        seen = await _read_state(conn, user_id)
-        bases = await baselines.get_baselines(conn, symbols)
-        quarantined = await _quarantined_recent(conn, symbols)
-        peaks = await _peaks_since(conn, seen)
-        snoozes = await _snoozes(conn, user_id)
-        from .config import settings as _cfg  # dispute thresholds
-        disputed = await quotes.disputes(conn, symbols, _cfg.dispute_threshold_pct, _cfg.dispute_window_seconds)
+        return await fn(conn, *args)
+
+
+async def list_watchlist(user_id: str) -> list[WatchRow]:
+    """Two waves of CONCURRENT reads instead of eight sequential ones. Each read is independent within a
+    wave, so wall time is ~one round-trip per wave — which matters when the database is in another
+    region (~200ms per hop turned a 30-symbol /state into seconds). Pool max_size covers the fan-out."""
+    now = datetime.now(UTC)
+    # Wave 1: what does the user watch, what did they last see, what's snoozed.
+    holdings, seen, snoozes = await asyncio.gather(
+        _q(_holdings, user_id), _q(_read_state, user_id), _q(_snoozes, user_id))
+    symbols = list(holdings)
+    if not symbols:
+        return []
+    # Wave 2: everything keyed by those symbols.
+    latest, bases, quarantined, peaks, disputed = await asyncio.gather(
+        _q(quotes.latest_quotes, symbols + [INDEX_SYMBOL]),
+        _q(baselines.get_baselines, symbols),
+        _q(_quarantined_recent, symbols),
+        _q(_peaks_since, seen),
+        _q(quotes.disputes, symbols, settings.dispute_threshold_pct, settings.dispute_window_seconds),
+    )
     idx_now = latest[INDEX_SYMBOL].price if INDEX_SYMBOL in latest else None
 
     out: list[WatchRow] = []
@@ -270,13 +335,14 @@ async def _snoozes(conn: asyncpg.Connection, user_id: str) -> dict[str, datetime
     return {r["symbol"]: r["snoozed_until"] for r in rows}
 
 
-async def snooze(user_id: str, symbol: str, minutes: int | None) -> None:
+async def snooze(user_id: str, symbol: str, minutes: int | None) -> bool:
     """Hold a symbol out of 'needs your attention' until then (None clears). It stays listed — nothing hidden."""
     symbol = normalize(symbol)
-    until = (datetime.now(timezone.utc) + __import__("datetime").timedelta(minutes=minutes)) if minutes else None
+    until = (datetime.now(UTC) + timedelta(minutes=minutes)) if minutes else None
     async with db.pool().acquire() as conn:
-        await conn.execute("update watchlist_items set snoozed_until=$3 where user_id=$1 and symbol=$2",
-                           user_id, symbol, until)
+        status = await conn.execute("update watchlist_items set snoozed_until=$3 where user_id=$1 and symbol=$2",
+                                    user_id, symbol, until)
+    return _updated(status)
 
 
 # --------------------------------------------------------------------------- mark seen (monotonic)
@@ -342,7 +408,8 @@ async def mark_all_seen(user_id: str) -> None:
 # --------------------------------------------------------------------------- co-movement cohorts
 
 _COHORT_CACHE: dict[frozenset, tuple[float, cohorts.CohortModel | None]] = {}
-COHORT_TTL_S = 3600  # cohorts change when the watchlist changes (key) or daily as candles refresh
+COHORT_TTL_S = 3600         # cohorts change when the watchlist changes (key) or daily as candles refresh
+COHORT_CACHE_MAX = 256      # one entry per distinct watchlist-set; bounded so a churny user can't grow it forever
 
 
 async def _cohort_model(conn: asyncpg.Connection, symbols: list[str]) -> cohorts.CohortModel | None:
@@ -351,8 +418,10 @@ async def _cohort_model(conn: asyncpg.Connection, symbols: list[str]) -> cohorts
     hit = _COHORT_CACHE.get(key)
     if hit and time.time() - hit[0] < COHORT_TTL_S:
         return hit[1]
-    cands = {s: c for s in symbols if (c := await baselines.load_candles(conn, s))}
+    cands = {s: c for s, c in (await baselines.load_candles_many(conn, symbols)).items() if c}  # one round-trip
     model = cohorts.build(cands) if len(cands) >= 2 else None
+    if len(_COHORT_CACHE) >= COHORT_CACHE_MAX:
+        _COHORT_CACHE.pop(min(_COHORT_CACHE, key=lambda k: _COHORT_CACHE[k][0]))  # evict the oldest
     _COHORT_CACHE[key] = (time.time(), model)
     return model
 
@@ -382,11 +451,16 @@ def attention_score(unusualness: float, impact_inr: float | None) -> float:
     return unusualness * (1.0 + math.log10(1.0 + abs(impact_inr) / 1000.0))
 
 
+def _headline(sig: Signal, ch: Change) -> str:
+    """ONE lead reason on the card (the rest are in the panel), or the plain move if nothing fired."""
+    return sig.reasons[0] if sig.reasons else f"{ch.pct:+.2f}% since you last looked — nothing unusual"
+
+
 def _changes_from_rows(rows: list[WatchRow], model: cohorts.CohortModel | None = None) -> list[ChangeRow]:
     """'While you were away'. Every moved symbol is included (rerank-never-suppress); is_meaningful marks
-    the ones where a reason fired. With a cohort model: symbols moving ALONE vs their co-movement peers
-    are promoted to the top; pack moves are tagged with their cohort so the client can collapse them.
-    Grouping is presentation only — nothing is ever removed from this list."""
+    the ones where a reason fired. With a cohort model: a symbol moving ALONE vs its co-movement peers
+    gets that as a reason and its peer divergence adds to its rank; pack moves are tagged with their
+    cohort so the client can collapse them. Grouping is presentation only — nothing is ever removed."""
     moved = [r for r in rows if r.has_baseline and r.change_since_seen and r.price is not None
              and r.change_since_seen.direction != "flat"]
 
@@ -399,12 +473,11 @@ def _changes_from_rows(rows: list[WatchRow], model: cohorts.CohortModel | None =
             explain=Explain(sigma_move=0.0, move_pct=ch.pct, market_adjusted_pct=ch.pct, vol_ratio=1.0,
                             crossed=None, sigma_daily_pct=0.0, beta=None, elapsed_seconds=0.0),
         )
-        headline = " · ".join(sig.reasons) if sig.reasons else f"{ch.pct:+.2f}% since you last looked — nothing unusual"
         if r.snoozed_until is not None:
             # Snoozed: still LISTED with its reasons (nothing hidden), but not counted as needing attention.
             sig = sig.model_copy(update={"is_meaningful": False})
         out.append(ChangeRow(symbol=r.symbol, price=r.price, provenance=r.provenance, last_seen=snap,
-                             change_since_seen=ch, signal=sig, headline=headline,
+                             change_since_seen=ch, signal=sig, headline=_headline(sig, ch),
                              quantity=r.quantity, impact_inr=r.impact_inr, snoozed_until=r.snoozed_until))
 
     if model is not None and out:
@@ -412,32 +485,38 @@ def _changes_from_rows(rows: list[WatchRow], model: cohorts.CohortModel | None =
         elapsed = float(np.median([c.signal.explain.elapsed_seconds for c in out])) or scoring.MIN_ELAPSED_S
         res = cohorts.peer_residuals(model, moves, elapsed_seconds=elapsed,
                                      trading_day_s=scoring.TRADING_DAY_S, min_elapsed_s=scoring.MIN_ELAPSED_S)
+        by_sym = {c.symbol: c for c in out}
         for c in out:
             c.cohort_id = model.cohort_of.get(c.symbol)
             pr = res.get(c.symbol)
             if pr is not None:
-                z = float(pr[1])
-                c.peer_residual_z = round(z, 2)
-                c.moving_alone = bool(abs(z) >= cohorts.PEER_Z_FLAG)  # plain bool: numpy.bool_ won't serialize
-                if c.moving_alone and not any(("peers" in r or "co-mover" in r) for r in c.signal.reasons):
-                    present = [s for s in model.cohorts[c.cohort_id] if s in moves] if c.cohort_id is not None else []
-                    if len(present) == 2:
-                        # A PAIR that diverged: you can't say which one is "alone" — say what's true instead.
-                        other = next(s for s in present if s != c.symbol).replace(".NS", "")
-                        c.signal.reasons.append(f"diverging {abs(z):.1f}σ from {other}, which it usually moves with")
-                    else:
-                        c.signal.reasons.append(f"moving alone: {abs(z):.1f}σ vs its co-movement peers")
-                    if c.snoozed_until is None:   # snoozed stays listed-not-counted, even if it diverges
-                        c.signal.is_meaningful = True
-                    c.headline = " · ".join(c.signal.reasons)
+                c.peer_residual_z = round(float(pr[1]), 2)
+        # Which ones are "moving alone"? |peer z| >= 2. In a PAIR both members diverge from each other by
+        # construction, so only the one with the larger own move earns the flag ("X diverging from Y").
+        for members in model.cohorts:
+            present = [by_sym[s] for s in members if s in by_sym]
+            flagged = [c for c in present if c.peer_residual_z is not None and abs(c.peer_residual_z) >= cohorts.PEER_Z_FLAG]
+            if len(present) == 2 and len(flagged) == 2:
+                flagged = [max(flagged, key=lambda c: (c.signal.explain.sigma_move, abs(c.peer_residual_z or 0), c.symbol))]
+            for c in flagged:
+                c.moving_alone = True
+                if len(present) == 2:
+                    other = next(o for o in present if o is not c).symbol.replace(".NS", "")
+                    c.signal.reasons.append(f"Diverging from {other}, which it usually moves with")
+                else:
+                    c.signal.reasons.append("Moving alone — its usual peers aren't")
+                if c.snoozed_until is None:   # snoozed stays listed-not-counted, even if it diverges
+                    c.signal.is_meaningful = True
+                c.headline = _headline(c.signal, c.change_since_seen)
 
-    def key(c: ChangeRow):
-        # snoozed last; moving-alone first (biggest divergence first); then attention (unusualness x
-        # rupees at stake); then raw size as a final tiebreak
-        return (2 if c.snoozed_until is not None else (0 if c.moving_alone else 1),
-                -(abs(c.peer_residual_z) if c.moving_alone and c.peer_residual_z is not None else 0.0),
-                -attention_score(c.signal.unusualness, c.impact_inr), -abs(c.change_since_seen.pct))
-    out.sort(key=key)
+    def rank(c: ChangeRow) -> float:
+        # Peer divergence is unusualness too (same sigma-ish units), so it ADDS to the rank rather than
+        # hard-overriding it: a 2.1-sigma lone mover you don't hold does not outrank a 2.5-sigma move on a
+        # Rs 1L position. Exposure keeps its say.
+        alone = abs(c.peer_residual_z) if (c.moving_alone and c.peer_residual_z is not None) else 0.0
+        return attention_score(c.signal.unusualness + alone, c.impact_inr)
+
+    out.sort(key=lambda c: (1 if c.snoozed_until is not None else 0, -rank(c), -abs(c.change_since_seen.pct)))
     return out
 
 
@@ -450,7 +529,3 @@ async def get_state(user_id: str) -> tuple[list[WatchRow], list[ChangeRow], list
         async with db.pool().acquire() as conn:
             model = await _cohort_model(conn, symbols)
     return rows, _changes_from_rows(rows, model), _cohort_infos(model)
-
-
-async def get_changes(user_id: str) -> list[ChangeRow]:
-    return _changes_from_rows(await list_watchlist(user_id))

@@ -5,11 +5,9 @@ from __future__ import annotations
 import math
 
 import numpy as np
-import pytest
 
 from app import scoring
-from app.scoring import (Features, activity_outlook, features_for_bar, flags_and_reasons,
-                         live_features, unusualness)
+from app.scoring import Features, features_for_bar, flags_and_reasons, live_features, unusualness
 
 
 def _series(n=400, seed=7):
@@ -74,43 +72,27 @@ def test_live_market_adjustment_uses_beta():
     assert f.abs_resid_z < 0.01
 
 
-def test_flags_are_deterministic_and_independent_of_model():
-    """The model only ORDERS. Flags/reasons come from thresholds alone (rerank-never-suppress)."""
+def test_flags_are_plain_english_and_threshold_driven():
+    """Reasons are short plain-English phrases (the numbers live in the explain panel); they come from
+    fixed thresholds only — no model gates them (rerank-never-suppress)."""
     big = Features(abs_resid_z=2.6, log_vol_ratio=math.log(3.1), cross_flag=1.0, resid_pct=0.03,
                    move_pct=0.03, vol_ratio=3.1, crossed="high", sigma_used=0.012)
     reasons = flags_and_reasons(big)
-    assert len(reasons) == 3 and any("σ" in r for r in reasons) and any("volume" in r for r in reasons)
+    assert len(reasons) == 3
+    assert reasons[0].startswith("Unusual move") and "σ" not in reasons[0]   # sigma stays in the panel
+    assert reasons[1].startswith("Volume") and "3.1" in reasons[1]
+    assert reasons[2] == "Broke its 52-week high"
     quiet = Features(abs_resid_z=0.3, log_vol_ratio=0.0, cross_flag=0.0, resid_pct=0.002,
                      move_pct=0.002, vol_ratio=1.0, crossed=None, sigma_used=0.012)
     assert flags_and_reasons(quiet) == []
-    # Unusualness is the ranking score (descriptive); it never decides visibility. The learned activity
-    # outlook is a separate, optional tag.
+    # Unusualness is the ranking score (descriptive); it never decides visibility.
     assert unusualness(big) > unusualness(quiet)
-    for f in (big, quiet):
-        out = activity_outlook(f)
-        assert out is None or 0.0 < out[0] < 1.0
-
-
-def test_no_outlook_when_artifact_absent(monkeypatch, tmp_path):
-    """Missing artifact -> the app degrades to 'no activity tag', never an error."""
-    monkeypatch.setattr(scoring, "MODEL_PATH", tmp_path / "missing.json")
-    scoring.load_model.cache_clear()
-    f = Features(abs_resid_z=2.0, log_vol_ratio=0.5, cross_flag=0.0, resid_pct=0.02,
-                 move_pct=0.02, vol_ratio=1.6, crossed=None, sigma_used=0.01)
-    assert activity_outlook(f) is None
-    scoring.load_model.cache_clear()
 
 
 def test_priority_monotonic_in_move_size():
-    """Ranking is descriptive: more market-adjusted movement -> strictly higher unusualness.
-    And the shipped ACTIVITY artifact, if present, must carry a positive weight on relative volume —
-    the one effect the real data supports (volatility clustering)."""
+    """Ranking is descriptive: more market-adjusted movement -> strictly higher unusualness."""
     def mk(z):
         return Features(abs_resid_z=z, log_vol_ratio=0.0, cross_flag=0.0, resid_pct=0.0,
                         move_pct=0.0, vol_ratio=1.0, crossed=None, sigma_used=0.01)
     us = [unusualness(mk(z)) for z in (0.5, 1.0, 2.0, 3.0)]
     assert us == sorted(us) and len(set(us)) == 4, f"unusualness not strictly monotonic: {us}"
-    m = scoring.load_model()
-    if m is not None:
-        vol_idx = scoring.FEATURE_NAMES.index("log_vol_ratio")
-        assert m["coef"][vol_idx] > 0, "activity model must weight relative volume positively"

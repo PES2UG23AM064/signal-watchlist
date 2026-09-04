@@ -6,8 +6,9 @@ milestones lean on these fields for stale-write rejection and conflict reconcili
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
-from typing import Protocol, Sequence
+from typing import Protocol
 
 from pydantic import BaseModel
 

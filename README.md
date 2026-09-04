@@ -9,7 +9,7 @@
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)
 ![React 18](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)
 ![Postgres](https://img.shields.io/badge/Postgres-Supabase-4169E1?logo=postgresql&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-45_unit_%2B_4_integration-brightgreen)
+![Tests](https://img.shields.io/badge/tests-45_unit_%2B_5_integration-brightgreen)
 
 **[Live app](https://signal-watchlist-web.onrender.com)** · **[API docs](https://signal-watchlist-api.onrender.com/docs)**
 
@@ -131,7 +131,7 @@ python -m scripts.smoke                          # end-to-end smoke against your
 | **Sanity quarantine** | Impossible quotes — price ≤ 0, negative volume, future timestamps, single-tick jumps beyond NSE's **20% circuit band** — are flagged and stored for audit but **never served**. Judged only against a *recent* reference, so a stale wrong price can't quarantine correct data forever. |
 | **Live feed + circuit breaker** | `MARKET_PROVIDER=composite`: live Yahoo quotes while NSE is open; on failure the breaker trips (**3 strikes → 60s open → one half-open trial**) and every quote falls back to the simulator without the app ever erroring — and the source badge tells the truth about which path served it. |
 | **Cross-source reconciliation** | An optional second real feed (Twelve Data) is recorded as `role='secondary'` — a cross-check that can **never** become the served price. When it diverges from the primary beyond a threshold, the symbol shows **"disputed"** with both prices. We never silently pick one. |
-| **Poller leader election** | A Postgres session-level advisory lock on a dedicated connection guarantees **exactly one instance writes**, even if several run; a follower takes over within one poll interval if the leader dies. Tested across two sessions. |
+| **Poller leader election** | A Postgres session-level advisory lock on a dedicated connection guarantees **exactly one instance writes**, even if several run; a follower takes over within one poll interval if the leader dies. The lock session heartbeats every interval and carries a 60s server-side lease (`idle_session_timeout`), so a leader that vanishes *without* closing its session — a spun-down container, a dropped TCP connection — loses the lock within a minute instead of holding it as a zombie. Tested across two sessions. |
 | **Rate limiting** | The live feed runs behind a token bucket (30/min) with bounded concurrency. |
 | **Observability** | `GET /status` + a **System health** panel: provider route, breaker state, poller role, cycle time vs interval (with a falling-behind warning), per-symbol freshness, quarantines in the last hour. |
 
@@ -196,8 +196,9 @@ Before trusting "meaningful", we asked whether it **predicts** anything, with a 
 **So no learned model ships.** The bar was fixed before looking: a predictive tag needs a CI that excludes
 0.5 *and* top-decile lift ≥ 2×. Nothing came close, and a 0.54-AUC "outlook" tag would be noise dressed as
 insight. That is the answer to "why no ML on the ranking" — not caution, evidence. The full report is served
-at `GET /model` and shown in the app's **Insights** tab. The two hypotheses that failed are displayed, not
-hidden.
+at `GET /model` and shown in the app under **How it works → See the evidence** (collapsed by default: a
+customer sees three plain sentences; a reviewer can open the tables). All three hypotheses are displayed,
+including the ones that failed.
 
 ### Structure: where ML *does* work here
 
@@ -278,8 +279,8 @@ stateful service. That's a deliberate choice, not a limitation being hidden:
 - **Provider interface.** `MarketDataProvider` with three implementations: `replay` (deterministic simulator
   anchored to each stock's real last close and sized in its real σ), `yahoo` (live), `composite` (live +
   breaker + honest fallback + optional secondary).
-- **Runtime ML is a JSON artifact + numpy.** scikit-learn is a dev-only dependency; production scoring is a
-  dot product.
+- **No runtime ML.** The backtest runs offline (scikit-learn is a dev-only dependency) and ships a report,
+  not a model; production scoring is arithmetic on real baselines, and the cohort model is ~15 lines of numpy.
 
 ---
 
@@ -342,7 +343,7 @@ Frontend: `VITE_API_URL` (defaults to `http://localhost:8000`).
 ```bash
 cd backend
 pytest tests -q --ignore=tests/integration            # 45 unit tests, ~1s, no database
-INTEGRATION=1 pytest tests/integration -q              # 4 DB-backed invariant tests (needs DATABASE_URL)
+INTEGRATION=1 pytest tests/integration -q              # 5 DB-backed tests: integrity invariants + account lifecycle (needs DATABASE_URL)
 ruff check app ml tests                                # lint
 python -m scripts.smoke                                # end-to-end smoke against a running API
 ```
@@ -352,13 +353,15 @@ the backtest), sanity-quarantine rules, market-hours/holiday logic, the circuit 
 cohort clustering (including "nothing is ever hidden"), the ranking (holdings amplify but never drown out),
 and the Replay simulator's determinism.
 
-**Integration tests** ([`tests/integration/test_db_invariants.py`](backend/tests/integration/test_db_invariants.py))
-prove the invariants this README claims against a **real Postgres**:
+**Integration tests** ([`tests/integration/`](backend/tests/integration)) prove the invariants this README
+claims against a **real Postgres**:
 
 1. quarantine, roles, and disputes — a secondary quote can never be served;
 2. the stale-reference escape hatch — a wrong old price can't quarantine correct data forever;
 3. the **monotonic watermark** — a snapshot never moves backward;
-4. **leader-lock exclusivity** across two sessions.
+4. **leader-lock exclusivity** across two sessions;
+5. the **account lifecycle** — validation, duplicate refused, generic sign-in errors, lockout, token
+   rotation on logout, expiry.
 
 **CI** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on every push and PR: ruff + unit tests,
 the integration suite against a Postgres 16 service container, and a production frontend build.
@@ -406,21 +409,23 @@ signal-watchlist/
 │   │   ├── providers/         MarketDataProvider: replay · yahoo · twelvedata · composite (breaker)
 │   │   ├── routes/            auth · watchlist · state · model · status · events · dev
 │   │   └── model/             backtest_report.json · cohort_report.json (served by /model)
-│   ├── migrations/            001…008 plain SQL, applied on startup
+│   ├── migrations/            001…009 plain SQL, applied on startup
 │   ├── ml/
 │   │   ├── train_scorer.py    Backtest: time split, embargo, block bootstrap, pre-registered labels
 │   │   └── validate_cohorts.py  Cohort structure, stability (ARI), alert counterfactual
 │   ├── scripts/smoke.py       End-to-end smoke test
-│   └── tests/                 45 unit tests + tests/integration (4, DB-backed)
+│   └── tests/                 45 unit tests + tests/integration (5, DB-backed)
 ├── frontend/src/
 │   ├── App.jsx                State, SSE + polling transport, drawers
 │   ├── api.js                 API client
 │   └── components/
 │       ├── digest/            DigestFeed (ranked cards) · ExplainPanel (every number)
 │       ├── watchlist/         WatchlistPanel (add, seen, holdings, remove)
-│       ├── insights/          ModelReceipts · CohortLab · SystemHealth
+│       ├── how/               "How it works": three plain cards + the collapsed evidence section
+│       ├── insights/          ModelReceipts · CohortLab · SystemHealth (inside "See the evidence")
+│       ├── auth/              Sign in / Create account
 │       ├── demo/              DemoDrawer — rewind + "Break it on purpose"
-│       └── layout/, ui/       TopBar, SummaryStrip, Drawer, Badges, Legend
+│       └── layout/, ui/       TopBar (theme toggle), SummaryStrip, Drawer, Badges, Legend
 ├── .github/workflows/ci.yml
 └── render.yaml
 ```

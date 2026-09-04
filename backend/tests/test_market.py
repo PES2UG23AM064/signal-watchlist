@@ -1,11 +1,12 @@
 """Market-hours logic (IST, NSE holidays). Pure + fast — no DB, no network."""
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.market import market_status
 
+
 # All inputs are UTC; +5:30 gives IST. 2026-09-04 is a Friday.
 def _utc(y, mo, d, h, mi):
-    return datetime(y, mo, d, h, mi, tzinfo=timezone.utc)
+    return datetime(y, mo, d, h, mi, tzinfo=UTC)
 
 
 def test_open_during_session():

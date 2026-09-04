@@ -6,8 +6,8 @@ provider swallows them — a cross-check must never take the app down.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Sequence
+from collections.abc import Sequence
+from datetime import UTC, datetime
 
 import httpx
 
@@ -53,7 +53,7 @@ class TwelveDataProvider:
         if d.get("status") == "error" or "close" not in d:
             raise TwelveDataError(d.get("message", "unusable payload"))
         ts = d.get("timestamp")
-        event_time = datetime.fromtimestamp(int(ts), tz=timezone.utc) if ts else datetime.now(timezone.utc)
+        event_time = datetime.fromtimestamp(int(ts), tz=UTC) if ts else datetime.now(UTC)
         return Quote(symbol=symbol, price=float(d["close"]), volume=int(float(d.get("volume") or 0)),
                      event_time=event_time, source=self.name)
 

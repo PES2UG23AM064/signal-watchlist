@@ -1,5 +1,5 @@
 """Quote sanity boundary — garbage is flagged suspect (and later quarantined), never crashes."""
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from app.providers import Quote
 from app.quotes import is_suspect
@@ -8,7 +8,7 @@ from app.quotes import is_suspect
 def _q(price, volume=1_000_000, event_time=None):
     return Quote(
         symbol="X.NS", price=price, volume=volume,
-        event_time=event_time or datetime.now(timezone.utc), source="replay",
+        event_time=event_time or datetime.now(UTC), source="replay",
     )
 
 
@@ -55,7 +55,7 @@ def test_no_prev_price_only_checks_structure():
 def test_jump_only_judged_against_recent_reference():
     # A 30% jump vs a quote from 5s ago is garbage. Vs a quote from an hour ago it may be a legitimate
     # gap — and a stale wrong reference must never quarantine correct data forever (the poison we hit).
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     q = _q(1690.0)  # +30% vs 1300
     assert is_suspect(q, prev_price=1300.0, now=now, prev_event_time=now - timedelta(seconds=5)) is True
     assert is_suspect(q, prev_price=1300.0, now=now, prev_event_time=now - timedelta(hours=1)) is False
@@ -63,10 +63,27 @@ def test_jump_only_judged_against_recent_reference():
     assert is_suspect(q, prev_price=1300.0, now=now, prev_event_time=None) is True
 
 
+def test_stale_reference_escape_hatch_is_bounded_by_the_anchor():
+    # The escape hatch above must not become a hole: with only a STALE reference, the quote is still
+    # judged against the stock's real last close. +30% vs an hour-old ref passes the tick check, but
+    # 1750 vs a 1300 anchor is +35%, beyond the 30% band -> garbage; 1495 (+15%) is a legitimate gap.
+    now = datetime.now(UTC)
+    stale = now - timedelta(hours=1)
+    assert is_suspect(_q(1750.0), prev_price=1300.0, now=now, prev_event_time=stale, anchor=1300.0) is True
+    assert is_suspect(_q(1495.0), prev_price=1300.0, now=now, prev_event_time=stale, anchor=1300.0) is False
+    # First quote ever for a symbol (no previous at all): the anchor alone bounds it.
+    assert is_suspect(_q(1750.0), prev_price=None, anchor=1300.0) is True
+    assert is_suspect(_q(1350.0), prev_price=None, anchor=1300.0) is False
+    # A RECENT reference is authoritative; the anchor is not consulted (an intraday move away from the
+    # close is fine as long as each tick is plausible vs the last).
+    assert is_suspect(_q(1690.0), prev_price=1650.0, now=now, prev_event_time=now - timedelta(seconds=5),
+                      anchor=1300.0) is False
+
+
 def test_future_timestamp_is_suspect():
     # A quote stamped far in the future would poison the latest-by-event_time read forever.
-    future = datetime.now(timezone.utc) + timedelta(minutes=1)
+    future = datetime.now(UTC) + timedelta(minutes=1)
     assert is_suspect(_q(1300.0, event_time=future), prev_price=1300.0) is True
     # A tiny clock skew within tolerance is fine.
-    near = datetime.now(timezone.utc) + timedelta(seconds=2)
+    near = datetime.now(UTC) + timedelta(seconds=2)
     assert is_suspect(_q(1300.0, event_time=near), prev_price=1300.0) is False

@@ -10,10 +10,10 @@ sanity quarantine (garbage quote never served as truth) -> market status.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app import db, poller, quotes, services
-from app.auth import login_or_register
+from app.auth import register
 from app.market import market_status
 from app.providers import Quote
 
@@ -23,11 +23,9 @@ async def main() -> None:
     await db.run_migrations()
 
     async with db.pool().acquire() as conn:
-        await conn.execute("delete from users where username='smoke_user'")
+        await conn.execute("delete from users where email='smoke_user@test.local'")
 
-    token = await login_or_register("smoke_user", "1234")
-    async with db.pool().acquire() as conn:
-        uid = str(await conn.fetchval("select id from users where session_token=$1", token))
+    uid = (await register("smoke_user@test.local", "smoke-password-1", "Smoke")).user.id
     print("user:", uid[:8])
 
     for s in ["reliance", "TCS", "INFY.NS", "reliance"]:
@@ -57,10 +55,10 @@ async def main() -> None:
         print(f"  {r.symbol:14} {str(r.price):>10}  chg={ch.pct if ch else None}%  baseline={r.has_baseline}")
     assert all(r.has_baseline for r in wl), "expected baselines after mark_seen"
 
-    changes = await services.get_changes(uid)
-    print("\nchanges feed (ranked by magnitude):")
+    _, changes, _ = await services.get_state(uid)
+    print("\nchanges feed (ranked):")
     for c in changes:
-        print(f"  {c.symbol:14} {c.reason:35} src={c.provenance.source}")
+        print(f"  {c.symbol:14} {c.headline:50} src={c.provenance.source}")
 
     # Monotonic watermark: an older snapshot must not overwrite a newer one.
     async with db.pool().acquire() as conn:
@@ -87,7 +85,7 @@ async def main() -> None:
     async with db.pool().acquire() as conn:
         prev_lq = (await quotes.latest_quotes(conn, ["RELIANCE.NS"]))["RELIANCE.NS"]
         good_before = prev_lq.price
-        garbage = Quote(symbol="RELIANCE.NS", price=0.0, volume=1, event_time=datetime.now(timezone.utc), source="replay")
+        garbage = Quote(symbol="RELIANCE.NS", price=0.0, volume=1, event_time=datetime.now(UTC), source="replay")
         stored_ok = await quotes.record_quote(conn, garbage, prev=prev_lq)
         good_after = (await quotes.latest_quotes(conn, ["RELIANCE.NS"]))["RELIANCE.NS"].price
     assert stored_ok is False, "garbage quote should be flagged suspect"
@@ -99,7 +97,7 @@ async def main() -> None:
     print(f"\nmarket status: {ms.label} - {ms.detail}")
 
     async with db.pool().acquire() as conn:
-        await conn.execute("delete from users where username='smoke_user'")
+        await conn.execute("delete from users where email='smoke_user@test.local'")
     await db.disconnect()
     print("\nSMOKE TEST PASSED")
 

@@ -1,0 +1,12 @@
+# Lint config — committed so CI and local runs agree.
+line-length = 120
+target-version = "py312"
+
+[lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]  # long lines: docstrings/SQL read better unwrapped at 120
+
+[lint.per-file-ignores]
+# Test fakes and the offline ML scripts use compact one-line statements on purpose.
+"tests/**" = ["E701", "E702"]
+"ml/**" = ["E701", "E702"]

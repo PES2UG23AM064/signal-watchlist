@@ -17,7 +17,7 @@ from .config import settings
 from .market import market_status
 from .models import MarketStatusModel
 from .providers import get_provider
-from .routes import auth, changes, dev, events, model, state, status, watchlist
+from .routes import auth, dev, events, model, state, status, watchlist
 
 logging.basicConfig(level=logging.INFO)
 
@@ -54,8 +54,7 @@ app.add_middleware(
 
 app.include_router(auth.router)
 app.include_router(watchlist.router)
-app.include_router(changes.router)
-app.include_router(state.router)
+app.include_router(state.router)   # the ONE digest surface: watchlist + ranked changes + cohorts
 app.include_router(model.router)
 app.include_router(dev.router)
 app.include_router(status.router)

@@ -15,9 +15,16 @@ from typing import Any
 
 _subscribers: set[asyncio.Queue] = set()
 QUEUE_SIZE = 100
+MAX_SUBSCRIBERS = 500  # a single process should not accept unbounded open streams
+
+
+class TooManySubscribers(Exception):
+    pass
 
 
 def subscribe() -> asyncio.Queue:
+    if len(_subscribers) >= MAX_SUBSCRIBERS:
+        raise TooManySubscribers(len(_subscribers))
     q: asyncio.Queue = asyncio.Queue(maxsize=QUEUE_SIZE)
     _subscribers.add(q)
     return q

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date
 
 import asyncpg
 import numpy as np
@@ -59,7 +58,8 @@ def compute(symbol: str, candles: list[Candle], index_candles: list[Candle] | No
         idx_by_day = {c.day: c.close for c in index_candles}
         pairs = [(c.close, idx_by_day[c.day]) for c in candles if c.day in idx_by_day]
         if len(pairs) >= MIN_BARS:
-            s = np.array([p[0] for p in pairs]); m = np.array([p[1] for p in pairs])
+            s = np.array([p[0] for p in pairs])
+            m = np.array([p[1] for p in pairs])
             rs, rm = _returns(s), _returns(m)
             var_m = float(np.var(rm, ddof=1))
             if var_m > 0:
@@ -129,6 +129,21 @@ async def load_candles(conn: asyncpg.Connection, symbol: str) -> list[Candle]:
         "select day, open, high, low, close, volume from daily_candles where symbol=$1 order by day", symbol
     )
     return [Candle(r["day"], r["open"], r["high"], r["low"], r["close"], r["volume"]) for r in rows]
+
+
+async def load_candles_many(conn: asyncpg.Connection, symbols: list[str]) -> dict[str, list[Candle]]:
+    """Cached history for MANY symbols in one round-trip (grouped in Python). A per-symbol loop was the
+    last N+1 on the /state path: 30 symbols x ~200ms cross-region RTT on every cohort-cache miss."""
+    if not symbols:
+        return {}
+    rows = await conn.fetch(
+        "select symbol, day, open, high, low, close, volume from daily_candles "
+        "where symbol = any($1::text[]) order by symbol, day", symbols
+    )
+    out: dict[str, list[Candle]] = {}
+    for r in rows:
+        out.setdefault(r["symbol"], []).append(Candle(r["day"], r["open"], r["high"], r["low"], r["close"], r["volume"]))
+    return out
 
 
 async def _is_fresh(conn: asyncpg.Connection, symbol: str) -> bool:

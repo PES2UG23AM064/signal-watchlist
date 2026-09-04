@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
@@ -31,20 +31,20 @@ async def _setup():
     await db.run_migrations()
     async with db.pool().acquire() as c:
         await c.execute("delete from quotes where symbol=$1", SYM)
-        await c.execute("delete from users where username='it_user'")
+        await c.execute("delete from users where email='it_user@test.local'")
     return db
 
 
 async def _teardown(db):
     async with db.pool().acquire() as c:
         await c.execute("delete from quotes where symbol=$1", SYM)
-        await c.execute("delete from users where username='it_user'")
+        await c.execute("delete from users where email='it_user@test.local'")
     await db.disconnect()
 
 
 def _q(price, dt=None, source="primary-test"):
     from app.providers import Quote
-    return Quote(symbol=SYM, price=price, volume=1000, event_time=dt or datetime.now(timezone.utc), source=source)
+    return Quote(symbol=SYM, price=price, volume=1000, event_time=dt or datetime.now(UTC), source=source)
 
 
 def test_quarantine_and_roles_never_change_the_served_price():
@@ -53,7 +53,7 @@ def test_quarantine_and_roles_never_change_the_served_price():
         db = await _setup()
         try:
             async with db.pool().acquire() as c:
-                t0 = datetime.now(timezone.utc)
+                t0 = datetime.now(UTC)
                 assert await quotes.record_quote(c, _q(100.0, t0), None) is True
                 prev = (await quotes.latest_quotes(c, [SYM]))[SYM]
                 # garbage, absurd jump, future timestamp -> all quarantined
@@ -81,7 +81,7 @@ def test_stale_reference_does_not_quarantine_correct_data_forever():
         db = await _setup()
         try:
             async with db.pool().acquire() as c:
-                old = datetime.now(timezone.utc) - timedelta(minutes=20)
+                old = datetime.now(UTC) - timedelta(minutes=20)
                 await quotes.record_quote(c, _q(300.0, old), None)          # a wrong, STALE reference
                 prev = (await quotes.latest_quotes(c, [SYM]))[SYM]
                 assert await quotes.record_quote(c, _q(200.0), prev) is True  # -33% vs a 20-min-old ref: accepted
@@ -93,14 +93,12 @@ def test_stale_reference_does_not_quarantine_correct_data_forever():
 
 def test_read_state_watermark_is_monotonic():
     async def body():
-        from app import quotes, services
-        from app.auth import login_or_register
+        from app import auth, quotes, services
         db = await _setup()
         try:
-            token = await login_or_register("it_user", "1234")
+            uid = (await auth.register("it_user@test.local", "it-password-1")).user.id
             async with db.pool().acquire() as c:
-                uid = str(await c.fetchval("select id from users where session_token=$1", token))
-                now = datetime.now(timezone.utc)
+                now = datetime.now(UTC)
                 await quotes.record_quote(c, _q(100.0, now), None)
                 lq_new = (await quotes.latest_quotes(c, [SYM]))[SYM]
                 await services._snapshot_upsert(c, uid, SYM, lq_new, None)
@@ -115,17 +113,26 @@ def test_read_state_watermark_is_monotonic():
 
 
 def test_poller_leader_lock_is_exclusive_across_sessions():
+    """Session-level advisory lock semantics: one holder at a time, and a waiting session takes over the
+    moment the holder releases. Uses a SCRATCH key so the test never contends with a running deployment's
+    REAL leader lock — which would (correctly) refuse us; that case is reported, not asserted."""
     async def body():
         from app.config import settings
         from app.poller import LEADER_LOCK_KEY
+        scratch = LEADER_LOCK_KEY + 1
         a = await asyncpg.connect(settings.database_url)
         b = await asyncpg.connect(settings.database_url)
         try:
-            assert await a.fetchval("select pg_try_advisory_lock($1)", LEADER_LOCK_KEY) is True
-            assert await b.fetchval("select pg_try_advisory_lock($1)", LEADER_LOCK_KEY) is False  # one leader
-            await a.execute("select pg_advisory_unlock($1)", LEADER_LOCK_KEY)
-            assert await b.fetchval("select pg_try_advisory_lock($1)", LEADER_LOCK_KEY) is True   # failover
-            await b.execute("select pg_advisory_unlock($1)", LEADER_LOCK_KEY)
+            assert await a.fetchval("select pg_try_advisory_lock($1)", scratch) is True
+            assert await b.fetchval("select pg_try_advisory_lock($1)", scratch) is False  # exclusive
+            await a.execute("select pg_advisory_unlock($1)", scratch)
+            assert await b.fetchval("select pg_try_advisory_lock($1)", scratch) is True   # failover
+            await b.execute("select pg_advisory_unlock($1)", scratch)
+            # The REAL key: if a deployed poller is live it holds this and we are refused — the whole point.
+            got_real = await a.fetchval("select pg_try_advisory_lock($1)", LEADER_LOCK_KEY)
+            if got_real:
+                await a.execute("select pg_advisory_unlock($1)", LEADER_LOCK_KEY)  # no live leader; hand it back
+            print("real leader lock held by a running instance:", not got_real)
         finally:
             await a.close(); await b.close()
     _run(body())

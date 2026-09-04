@@ -3,7 +3,7 @@ data freshness, recent quarantines, simulated outages. Point at it during the de
 know the app was lying if it ever did."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter
 
@@ -18,7 +18,7 @@ router = APIRouter(tags=["meta"])
 
 @router.get("/status")
 async def status() -> dict:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     async with db.pool().acquire() as conn:
         symbols = [r["symbol"] for r in await conn.fetch("select distinct symbol from watchlist_items order by symbol")]
         latest = await quotes.latest_quotes(conn, symbols + [INDEX_SYMBOL]) if symbols else {}

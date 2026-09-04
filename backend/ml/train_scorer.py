@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import pathlib
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import numpy as np
 from sklearn.linear_model import LogisticRegression
@@ -139,9 +139,40 @@ def main() -> None:
 
     corr = np.corrcoef(Xtr, rowvar=False)  # collinearity check — the sign-flip defense
 
+    test_days = np.array([r[1] for r in test])
+
+    def auc_ci95(y: np.ndarray, p: np.ndarray, n_boot: int = 2000, seed: int = 0) -> list[float]:
+        """BLOCK bootstrap: resample whole blocks of N_FORWARD consecutive trading DAYS (all symbols of
+        those days together), not individual rows. Rows are not independent here — every stock shares the
+        same market day (cross-sectional correlation) and adjacent days share overlapping label windows —
+        and a plain row bootstrap would pretend they are and report an interval that is too narrow. The
+        question is not "is the point estimate above 0.5" but "does the interval EXCLUDE 0.5"."""
+        rng = np.random.default_rng(seed)
+        days = np.array(sorted(set(test_days)))
+        blocks = [days[i: i + N_FORWARD] for i in range(0, len(days), N_FORWARD)]
+        rows_of = {d: np.flatnonzero(test_days == d) for d in days}
+        aucs = []
+        for _ in range(n_boot):
+            picked = rng.integers(0, len(blocks), len(blocks))
+            idx = np.concatenate([rows_of[d] for b in picked for d in blocks[b]])
+            if y[idx].min() == y[idx].max():
+                continue  # a resample with one class has no AUC
+            aucs.append(roc_auc_score(y[idx], p[idx]))
+        lo, hi = np.percentile(aucs, [2.5, 97.5])
+        return [round(float(lo), 4), round(float(hi), 4)]
+
+    def verdict(ci: list[float]) -> str:
+        return "no edge: 95% CI includes 0.5" if ci[0] <= 0.5 <= ci[1] else "edge: 95% CI excludes 0.5"
+
+    # Product bar for SHIPPING a predictive tag, fixed before looking at the numbers: statistically non-zero
+    # is not enough — a tag has to be right about twice as often as chance in its top decile to be worth a
+    # user's attention. Below that it is noise dressed as insight.
+    MIN_USEFUL_LIFT = 2.0
+
     clf = LogisticRegression(C=1.0, max_iter=1000).fit(Ztr, ytr)
     p_te = clf.predict_proba(Zte)[:, 1]
     auc = float(roc_auc_score(yte, p_te)); brier = float(brier_score_loss(yte, p_te))
+    ci = auc_ci95(yte, p_te)
     base = float(yte.mean())
     cal = _calibration(p_te, yte)
     top = cal[-1]["realized_rate"]; lift = round(top / base, 2) if base > 0 else None
@@ -149,52 +180,69 @@ def main() -> None:
     # Pre-registered secondary label: direction. Expected ~0.5 (no edge). Reported, not hidden.
     _, ydtr = _xy(train, 4); _, ydte = _xy(test, 4)
     clf_dir = LogisticRegression(C=1.0, max_iter=1000).fit(Ztr, ydtr)
-    auc_dir = float(roc_auc_score(ydte, clf_dir.predict_proba(Zte)[:, 1]))
+    p_dir = clf_dir.predict_proba(Zte)[:, 1]
+    auc_dir = float(roc_auc_score(ydte, p_dir)); ci_dir = auc_ci95(ydte, p_dir)
 
     # Third pre-specified label: volatility clustering / "entering an active period".
     _, yvtr = _xy(train, 5); _, yvte = _xy(test, 5)
     clf_vol = LogisticRegression(C=1.0, max_iter=1000).fit(Ztr, yvtr)
     p_vol = clf_vol.predict_proba(Zte)[:, 1]
     auc_vol = float(roc_auc_score(yvte, p_vol)); base_vol = float(yvte.mean())
+    ci_vol = auc_ci95(yvte, p_vol); brier_vol = float(brier_score_loss(yvte, p_vol))
     cal_vol = _calibration(p_vol, yvte)
     lift_vol = round(cal_vol[-1]["realized_rate"] / base_vol, 2) if base_vol > 0 else None
 
+    shippable = [name for name, c, lf in (("follow-through", ci, lift), ("direction", ci_dir, None),
+                                          ("activity", ci_vol, lift_vol))
+                 if c[0] > 0.5 and lf is not None and lf >= MIN_USEFUL_LIFT]
+    conclusion = (
+        f"No label clears the bar to ship (block-bootstrap 95% CI excluding 0.5 AND top-decile lift >= {MIN_USEFUL_LIFT}x). "
+        f"Follow-through {verdict(ci)}; direction {verdict(ci_dir)}; activity {verdict(ci_vol)} with lift {lift_vol}x. "
+        "Therefore NO learned model ships: flags are fixed thresholds and the ranking is descriptive. "
+        "This report is the evidence for that decision."
+        if not shippable else
+        f"{', '.join(shippable)} clears the pre-stated bar — re-examine before deciding whether anything should ship."
+    )
+
     days_all = sorted({r[1] for r in panel})
-    version = f"lr-v1-{datetime.now(timezone.utc):%Y%m%d}"
+    version = f"backtest-v2-{datetime.now(UTC):%Y%m%d}"
     meta = {
         "symbols": sorted(inputs.keys()), "n_symbols": len(inputs),
         "date_range": [days_all[0].isoformat(), days_all[-1].isoformat()],
         "train_cutoff": cut.isoformat(), "n_train": int(len(train)), "n_test": int(len(test)),
-        "k_sigma": chosen_k, "n_forward_days": N_FORWARD, "trained_at": datetime.now(timezone.utc).isoformat(),
+        "k_sigma": chosen_k, "n_forward_days": N_FORWARD, "trained_at": datetime.now(UTC).isoformat(),
         "sample_note": ("symbol-days, but overlapping 3-day label windows and correlated large-caps put the "
                         "effective sample in the low hundreds — which is why this is 3 features, not 30"),
     }
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    # The SHIPPED artifact is the ACTIVITY model — the only label with out-of-sample signal. The
-    # follow-through and directional models are null and are reported (not shipped) in the report.
-    MODEL_PATH.write_text(json.dumps({
-        "version": version, "features": scoring.FEATURE_NAMES,
-        "label": f"activity: realized variance over next {N_FORWARD} days > trailing norm (volatility clustering)",
-        "coef": [round(float(c), 6) for c in clf_vol.coef_[0]], "intercept": round(float(clf_vol.intercept_[0]), 6),
-        "mean": [round(float(v), 6) for v in mean], "std": [round(float(v), 6) for v in std],
-        "meta": {**meta, "test_auc": round(auc_vol, 4), "test_base_rate": round(base_vol, 4),
-                 "top_decile_lift": lift_vol},
-    }, indent=2), encoding="utf-8")
+    # Nothing is written as a runtime model on purpose (see `conclusion`). If an older artifact is lying
+    # around from a previous run, remove it so the product can't quietly pick it up.
+    if MODEL_PATH.exists():
+        MODEL_PATH.unlink()
 
     REPORT_PATH.write_text(json.dumps({
         "version": version, "data_source": "real NSE daily candles (Yahoo Finance), NOT the replay simulator",
+        "ships_a_model": False,
         "label": {"primary": f"max |move| over next {N_FORWARD} bars >= {chosen_k} sigma (follow-through / attention)",
-                  "secondary": f"directional continuation over {N_FORWARD} bars (pre-registered; expected ~0.5 AUC)"},
-        "split": {"method": "time-ordered, no shuffle", "train_frac": TRAIN_FRAC, "embargo_days": N_FORWARD},
+                  "secondary": f"directional continuation over {N_FORWARD} bars (pre-registered; expected ~0.5 AUC)",
+                  "activity": f"realized variance over next {N_FORWARD} days > trailing-sigma^2 * {N_FORWARD} (volatility clustering)"},
+        "split": {"method": "time-ordered, no shuffle", "train_frac": TRAIN_FRAC, "embargo_days": N_FORWARD,
+                  "ci_method": f"block bootstrap over {N_FORWARD}-day blocks of test days (all symbols of a day together), "
+                               "2000 resamples, percentile 95% interval",
+                  "ship_bar": f"CI excludes 0.5 AND top-decile lift >= {MIN_USEFUL_LIFT}x"},
         "results": {
-            "test_auc": round(auc, 4), "test_brier": round(brier, 4), "test_base_rate": round(base, 4),
+            "conclusion": conclusion,
+            "test_auc": round(auc, 4), "test_auc_ci95": ci, "verdict": verdict(ci),
+            "test_brier": round(brier, 4), "test_base_rate": round(base, 4),
             "top_decile_realized_rate": top, "top_decile_lift_vs_base": lift,
-            "directional_test_auc": round(auc_dir, 4),
+            "directional_test_auc": round(auc_dir, 4), "directional_test_auc_ci95": ci_dir,
+            "directional_verdict": verdict(ci_dir),
             "calibration_deciles": cal,
             "activity_label": {
                 "definition": f"realized variance over next {N_FORWARD} days > trailing-sigma^2 * {N_FORWARD} (volatility clustering)",
-                "test_auc": round(auc_vol, 4), "test_base_rate": round(base_vol, 4),
+                "test_auc": round(auc_vol, 4), "test_auc_ci95": ci_vol, "verdict": verdict(ci_vol),
+                "test_brier": round(brier_vol, 4), "test_base_rate": round(base_vol, 4),
                 "top_decile_lift_vs_base": lift_vol, "calibration_deciles": cal_vol,
                 "coef_standardized": [round(float(c), 4) for c in clf_vol.coef_[0]],
             },
@@ -208,13 +256,13 @@ def main() -> None:
     }, indent=2), encoding="utf-8")
 
     print(f"symbols={len(inputs)}  rows={len(panel)}  train={len(train)}  test={len(test)}  K={chosen_k}sigma  N={N_FORWARD}d")
-    print(f"test base rate={base:.3f}  AUC={auc:.3f}  Brier={brier:.3f}  top-decile rate={top:.3f} (lift {lift}x)")
-    print(f"directional AUC={auc_dir:.3f}  (expected ~0.5: no directional edge)")
-    print(f"ACTIVITY (vol-clustering) label: base={base_vol:.3f}  AUC={auc_vol:.3f}  top-decile lift={lift_vol}x  "
-          f"coef={dict(zip(scoring.FEATURE_NAMES, [round(float(c),3) for c in clf_vol.coef_[0]]))}")
-    print("coef (standardized):", dict(zip(scoring.FEATURE_NAMES, [round(float(c), 3) for c in clf.coef_[0]])))
+    print(f"follow-through: base={base:.3f}  AUC={auc:.3f} CI95={ci}  Brier={brier:.3f}  top-decile lift={lift}x  -> {verdict(ci)}")
+    print(f"direction:      AUC={auc_dir:.3f} CI95={ci_dir}  -> {verdict(ci_dir)}")
+    print(f"activity:       base={base_vol:.3f}  AUC={auc_vol:.3f} CI95={ci_vol}  Brier={brier_vol:.3f}  lift={lift_vol}x  -> {verdict(ci_vol)}")
+    print("coef (standardized, follow-through):", dict(zip(scoring.FEATURE_NAMES, [round(float(c), 3) for c in clf.coef_[0]], strict=False)))
     print("feature corr:\n", np.round(corr, 3))
-    print(f"wrote {MODEL_PATH.name} and {REPORT_PATH.name}")
+    print(conclusion)
+    print(f"wrote {REPORT_PATH.name} (no runtime model artifact)")
 
 
 if __name__ == "__main__":

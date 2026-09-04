@@ -53,7 +53,9 @@ def returns_matrix(candles_by_symbol: dict[str, list[Candle]]) -> tuple[list[str
     common = sorted(set.intersection(*day_sets))
     if len(common) < 2:
         return symbols, np.zeros((0, len(symbols))), common
-    closes = np.array([[next(c.close for c in candles_by_symbol[s] if c.day == d) for s in symbols] for d in common])
+    # Index each symbol's closes by day ONCE (a per-cell generator scan here was O(days x symbols x candles)).
+    by_day = {s: {c.day: c.close for c in candles_by_symbol[s]} for s in symbols}
+    closes = np.array([[by_day[s][d] for s in symbols] for d in common])
     rets = closes[1:] / closes[:-1] - 1.0
     return symbols, rets, common
 

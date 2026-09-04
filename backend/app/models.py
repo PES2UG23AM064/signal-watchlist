@@ -6,14 +6,26 @@ from datetime import datetime
 from pydantic import BaseModel
 
 
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+    display_name: str | None = None
+
+
 class LoginRequest(BaseModel):
-    username: str
-    pin: str
+    email: str
+    password: str
 
 
-class LoginResponse(BaseModel):
+class AuthResponse(BaseModel):
     token: str
-    username: str
+    email: str
+    display_name: str | None = None
+
+
+class MeResponse(BaseModel):
+    email: str
+    display_name: str | None = None
 
 
 class AddSymbolRequest(BaseModel):
@@ -76,19 +88,15 @@ class Explain(BaseModel):
     path_note: str | None = None      # e.g. "spiked +2.4% then retraced"
 
 
-class Activity(BaseModel):
-    """The one learned signal: P(entering an active period). Secondary tag, never the ranking."""
-
-    probability: float
-    version: str
-
-
 class Signal(BaseModel):
+    """No learned model ships. The backtest (served at /model) tested three predictive hypotheses on real
+    candles and none beat noise at this sample size — so the signal is DESCRIPTIVE: what was unusual, with
+    the numbers behind it. (See README: "How 'meaningful' is decided — and what we tested".)"""
+
     reasons: list[str]         # plain-English, threshold-driven; empty => nothing unusual
-    is_meaningful: bool        # = any reason fired (deterministic; the model never gates this)
+    is_meaningful: bool        # = any reason fired (deterministic)
     unusualness: float         # descriptive ranking score (sigma-equivalent units)
     explain: Explain
-    activity: Activity | None = None
 
 
 class WatchRow(BaseModel):

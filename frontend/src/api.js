@@ -48,11 +48,20 @@ async function req(path, { method = "GET", body, auth = true } = {}) {
 }
 
 export const api = {
-  async login(username, pin) {
-    const data = await req("/auth/login", { method: "POST", body: { username, pin }, auth: false });
+  async register(email, password, displayName) {
+    const body = { email, password };
+    if (displayName) body.display_name = displayName;
+    const data = await req("/auth/register", { method: "POST", body, auth: false });
     setToken(data.token);
     return data;
   },
+  async login(email, password) {
+    const data = await req("/auth/login", { method: "POST", body: { email, password }, auth: false });
+    setToken(data.token);
+    return data;
+  },
+  // A remembered token is only a claim until the server agrees — called once on load.
+  me: () => req("/auth/me"),
   async logout() {
     // Server-side first (rotates the token so it's dead everywhere), then forget it locally.
     try {
@@ -77,5 +86,4 @@ export const api = {
     req(`/watchlist/${encodeURIComponent(symbol)}/quantity`, { method: "PATCH", body: { quantity } }),
   inject: (symbol, kind) => req("/dev/inject", { method: "POST", body: { symbol, kind } }), // demo fault injection
   markAllSeen: () => req("/watchlist/seen-all", { method: "POST" }),
-  getChanges: () => req("/changes"),
 };

@@ -6,16 +6,18 @@ Uses one unauthenticated chart endpoint (no API key) that returns, in a single c
     the raw material for the self-validating backtest. Always used, regardless of the live provider.
   * get_quote(): an opportunistic live quote path (Replay stays the deterministic demo backbone).
 
-Failures raise YahooError; callers (poller, baselines) catch and degrade — a flaky upstream must never
-take the app down.
+Good-citizen plumbing for an unauthenticated endpoint: one keep-alive client, a token bucket
+(`rate_per_min`, which the poller reads to stretch its interval rather than wedge), and bounded
+concurrency. Failures raise YahooError; callers (composite/breaker, baselines) degrade — a flaky upstream
+must never take the app down.
 """
 from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
-from typing import Sequence
+from datetime import UTC, date, datetime
 from urllib.parse import quote as urlquote
 
 import httpx
@@ -30,7 +32,8 @@ MAX_CONCURRENCY = 4      # bounded fan-out: N symbols do not become N serialized
 
 
 class _TokenBucket:
-    """Simple async token bucket: `rate` tokens per minute, burst up to `capacity`."""
+    """Async token bucket: `rate` tokens per minute, burst up to `capacity`. Waiters sleep OUTSIDE the
+    lock, so one sleeper never serializes everyone else behind it."""
 
     def __init__(self, rate_per_min: float, capacity: int) -> None:
         self.rate = rate_per_min / 60.0
@@ -40,15 +43,16 @@ class _TokenBucket:
         self._lock = asyncio.Lock()
 
     async def take(self) -> None:
-        async with self._lock:
-            while True:
+        while True:
+            async with self._lock:
                 now = time.monotonic()
                 self.tokens = min(self.capacity, self.tokens + (now - self.updated) * self.rate)
                 self.updated = now
                 if self.tokens >= 1:
                     self.tokens -= 1
                     return
-                await asyncio.sleep((1 - self.tokens) / self.rate)
+                wait = (1 - self.tokens) / self.rate
+            await asyncio.sleep(wait)
 
 
 class YahooError(Exception):
@@ -67,17 +71,23 @@ class Candle:
 
 class YahooProvider:
     name = "yahoo"
+    rate_per_min = RATE_PER_MIN  # read by the poller to size its interval
 
     def __init__(self) -> None:
         self._bucket = _TokenBucket(RATE_PER_MIN, capacity=RATE_PER_MIN)
         self._sem = asyncio.Semaphore(MAX_CONCURRENCY)
+        self._client: httpx.AsyncClient | None = None  # one keep-alive client; created lazily in-loop
+
+    def _http(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=_TIMEOUT, headers=_HEADERS)
+        return self._client
 
     async def _chart(self, symbol: str, range_: str, interval: str) -> dict:
         url = _CHART.format(symbol=urlquote(symbol, safe=""))  # '^NSEI' -> '%5ENSEI'
         await self._bucket.take()
         try:
-            async with httpx.AsyncClient(timeout=_TIMEOUT, headers=_HEADERS) as client:
-                resp = await client.get(url, params={"range": range_, "interval": interval})
+            resp = await self._http().get(url, params={"range": range_, "interval": interval})
         except httpx.HTTPError as e:
             raise YahooError(f"network error for {symbol}: {e}") from e
         if resp.status_code == 429:
@@ -91,7 +101,9 @@ class YahooProvider:
         return result
 
     async def get_quote(self, symbol: str) -> Quote:
-        r = await self._chart(symbol, "1d", "1m")
+        # The live fields live in `meta`; ask for the smallest payload that carries them (one daily bar),
+        # not 375 one-minute bars we'd throw away.
+        r = await self._chart(symbol, "1d", "1d")
         m = r.get("meta", {})
         price = m.get("regularMarketPrice")
         ts = m.get("regularMarketTime")
@@ -101,14 +113,14 @@ class YahooProvider:
             symbol=symbol,
             price=float(price),
             volume=int(m.get("regularMarketVolume") or 0),
-            event_time=datetime.fromtimestamp(int(ts), tz=timezone.utc),  # exchange event-time
+            event_time=datetime.fromtimestamp(int(ts), tz=UTC),  # exchange event-time
             source=self.name,
         )
 
     async def get_quotes(self, symbols: Sequence[str]) -> dict[str, Quote]:
         """Bounded concurrency + the token bucket: fast enough that a poll cycle doesn't fall behind the
         interval as the watchlist grows, gentle enough not to get rate-limited. A failing symbol raises
-        from here so the caller (composite/breaker) can fall back for it."""
+        from here so the caller (composite/breaker) can fall back for the batch."""
         async def one(s: str) -> tuple[str, Quote]:
             async with self._sem:
                 return s, await self.get_quote(s)
@@ -129,7 +141,7 @@ class YahooProvider:
                 continue
             out.append(
                 Candle(
-                    day=datetime.fromtimestamp(int(t), tz=timezone.utc).date(),
+                    day=datetime.fromtimestamp(int(t), tz=UTC).date(),
                     open=opens[i] if i < len(opens) else None,
                     high=highs[i] if i < len(highs) else None,
                     low=lows[i] if i < len(lows) else None,

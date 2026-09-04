@@ -1,155 +1,176 @@
 {
-  "version": "lr-v1-20260904",
+  "version": "backtest-v2-20260904",
   "data_source": "real NSE daily candles (Yahoo Finance), NOT the replay simulator",
+  "ships_a_model": false,
   "label": {
     "primary": "max |move| over next 3 bars >= 2.0 sigma (follow-through / attention)",
-    "secondary": "directional continuation over 3 bars (pre-registered; expected ~0.5 AUC)"
+    "secondary": "directional continuation over 3 bars (pre-registered; expected ~0.5 AUC)",
+    "activity": "realized variance over next 3 days > trailing-sigma^2 * 3 (volatility clustering)"
   },
   "split": {
     "method": "time-ordered, no shuffle",
     "train_frac": 0.7,
-    "embargo_days": 3
+    "embargo_days": 3,
+    "ci_method": "block bootstrap over 3-day blocks of test days (all symbols of a day together), 2000 resamples, percentile 95% interval",
+    "ship_bar": "CI excludes 0.5 AND top-decile lift >= 2.0x"
   },
   "results": {
-    "test_auc": 0.4805,
-    "test_brier": 0.2028,
-    "test_base_rate": 0.2303,
-    "top_decile_realized_rate": 0.2449,
-    "top_decile_lift_vs_base": 1.06,
-    "directional_test_auc": 0.4772,
+    "conclusion": "No label clears the bar to ship (block-bootstrap 95% CI excluding 0.5 AND top-decile lift >= 2.0x). Follow-through no edge: 95% CI includes 0.5; direction no edge: 95% CI includes 0.5; activity no edge: 95% CI includes 0.5 with lift 1.34x. Therefore NO learned model ships: flags are fixed thresholds and the ranking is descriptive. This report is the evidence for that decision.",
+    "test_auc": 0.5106,
+    "test_auc_ci95": [
+      0.4687,
+      0.551
+    ],
+    "verdict": "no edge: 95% CI includes 0.5",
+    "test_brier": 0.1905,
+    "test_base_rate": 0.2038,
+    "top_decile_realized_rate": 0.239,
+    "top_decile_lift_vs_base": 1.17,
+    "directional_test_auc": 0.5166,
+    "directional_test_auc_ci95": [
+      0.482,
+      0.5513
+    ],
+    "directional_verdict": "no edge: 95% CI includes 0.5",
     "calibration_deciles": [
       {
         "decile": 1,
-        "n": 50,
-        "mean_predicted": 0.2848,
-        "realized_rate": 0.26
+        "n": 160,
+        "mean_predicted": 0.2835,
+        "realized_rate": 0.2188
       },
       {
         "decile": 2,
-        "n": 50,
-        "mean_predicted": 0.3144,
-        "realized_rate": 0.28
+        "n": 160,
+        "mean_predicted": 0.3155,
+        "realized_rate": 0.2125
       },
       {
         "decile": 3,
-        "n": 50,
-        "mean_predicted": 0.3308,
-        "realized_rate": 0.2
+        "n": 160,
+        "mean_predicted": 0.3321,
+        "realized_rate": 0.175
       },
       {
         "decile": 4,
-        "n": 50,
-        "mean_predicted": 0.3454,
-        "realized_rate": 0.18
+        "n": 160,
+        "mean_predicted": 0.3443,
+        "realized_rate": 0.1562
       },
       {
         "decile": 5,
-        "n": 50,
-        "mean_predicted": 0.3585,
-        "realized_rate": 0.3
+        "n": 160,
+        "mean_predicted": 0.3552,
+        "realized_rate": 0.2313
       },
       {
         "decile": 6,
-        "n": 49,
-        "mean_predicted": 0.3718,
-        "realized_rate": 0.1429
+        "n": 159,
+        "mean_predicted": 0.3659,
+        "realized_rate": 0.1761
       },
       {
         "decile": 7,
-        "n": 49,
-        "mean_predicted": 0.3885,
-        "realized_rate": 0.2653
+        "n": 159,
+        "mean_predicted": 0.3781,
+        "realized_rate": 0.2453
       },
       {
         "decile": 8,
-        "n": 49,
-        "mean_predicted": 0.4059,
-        "realized_rate": 0.2449
+        "n": 159,
+        "mean_predicted": 0.3925,
+        "realized_rate": 0.2013
       },
       {
         "decile": 9,
-        "n": 49,
-        "mean_predicted": 0.4348,
-        "realized_rate": 0.1837
+        "n": 159,
+        "mean_predicted": 0.4192,
+        "realized_rate": 0.1824
       },
       {
         "decile": 10,
-        "n": 49,
-        "mean_predicted": 0.5047,
-        "realized_rate": 0.2449
+        "n": 159,
+        "mean_predicted": 0.4726,
+        "realized_rate": 0.239
       }
     ],
     "activity_label": {
       "definition": "realized variance over next 3 days > trailing-sigma^2 * 3 (volatility clustering)",
-      "test_auc": 0.5372,
-      "test_base_rate": 0.3071,
-      "top_decile_lift_vs_base": 1.46,
+      "test_auc": 0.5355,
+      "test_auc_ci95": [
+        0.4987,
+        0.5715
+      ],
+      "verdict": "no edge: 95% CI includes 0.5",
+      "test_brier": 0.2254,
+      "test_base_rate": 0.2527,
+      "top_decile_lift_vs_base": 1.34,
       "calibration_deciles": [
         {
           "decile": 1,
-          "n": 50,
-          "mean_predicted": 0.3405,
-          "realized_rate": 0.4
+          "n": 160,
+          "mean_predicted": 0.339,
+          "realized_rate": 0.2313
         },
         {
           "decile": 2,
-          "n": 50,
-          "mean_predicted": 0.3764,
-          "realized_rate": 0.26
+          "n": 160,
+          "mean_predicted": 0.38,
+          "realized_rate": 0.2687
         },
         {
           "decile": 3,
-          "n": 50,
-          "mean_predicted": 0.4012,
-          "realized_rate": 0.24
+          "n": 160,
+          "mean_predicted": 0.4017,
+          "realized_rate": 0.25
         },
         {
           "decile": 4,
-          "n": 50,
-          "mean_predicted": 0.418,
-          "realized_rate": 0.24
+          "n": 160,
+          "mean_predicted": 0.4173,
+          "realized_rate": 0.175
         },
         {
           "decile": 5,
-          "n": 50,
-          "mean_predicted": 0.4375,
-          "realized_rate": 0.22
+          "n": 160,
+          "mean_predicted": 0.4313,
+          "realized_rate": 0.175
         },
         {
           "decile": 6,
-          "n": 49,
-          "mean_predicted": 0.4517,
-          "realized_rate": 0.3673
+          "n": 159,
+          "mean_predicted": 0.4444,
+          "realized_rate": 0.2956
         },
         {
           "decile": 7,
-          "n": 49,
-          "mean_predicted": 0.4693,
-          "realized_rate": 0.3061
+          "n": 159,
+          "mean_predicted": 0.4588,
+          "realized_rate": 0.2956
         },
         {
           "decile": 8,
-          "n": 49,
-          "mean_predicted": 0.4893,
-          "realized_rate": 0.2653
+          "n": 159,
+          "mean_predicted": 0.4762,
+          "realized_rate": 0.239
         },
         {
           "decile": 9,
-          "n": 49,
-          "mean_predicted": 0.5199,
-          "realized_rate": 0.3265
+          "n": 159,
+          "mean_predicted": 0.5057,
+          "realized_rate": 0.2579
         },
         {
           "decile": 10,
-          "n": 49,
-          "mean_predicted": 0.5856,
-          "realized_rate": 0.449
+          "n": 159,
+          "mean_predicted": 0.5615,
+          "realized_rate": 0.3396
         }
       ],
       "coef_standardized": [
-        -0.0394,
-        0.3276,
-        0.0395
+        -0.0549,
+        0.2857,
+        0.0121
       ]
     }
   },
@@ -160,11 +181,11 @@
       "cross_flag"
     ],
     "coef_standardized": [
-      0.0497,
-      0.272,
-      0.0087
+      0.0125,
+      0.2369,
+      -0.0383
     ],
-    "intercept": -0.4489
+    "intercept": -0.513
   },
   "feature_correlation_train": {
     "features": [
@@ -175,42 +196,62 @@
     "matrix": [
       [
         1.0,
-        0.497,
-        0.166
+        0.477,
+        0.185
       ],
       [
-        0.497,
+        0.477,
         1.0,
-        0.203
+        0.182
       ],
       [
-        0.166,
-        0.203,
+        0.185,
+        0.182,
         1.0
       ]
     ]
   },
   "symbols": [
+    "ADANIENT.NS",
+    "ASIANPAINT.NS",
+    "AXISBANK.NS",
+    "BAJFINANCE.NS",
     "BHARTIARTL.NS",
+    "COALINDIA.NS",
+    "HCLTECH.NS",
     "HDFCBANK.NS",
+    "HINDUNILVR.NS",
     "ICICIBANK.NS",
     "INFY.NS",
     "ITC.NS",
+    "JSWSTEEL.NS",
+    "KOTAKBANK.NS",
     "LT.NS",
+    "MARUTI.NS",
+    "NESTLEIND.NS",
+    "NTPC.NS",
+    "ONGC.NS",
+    "POWERGRID.NS",
     "RELIANCE.NS",
     "SBIN.NS",
-    "TCS.NS"
+    "SUNPHARMA.NS",
+    "TATASTEEL.NS",
+    "TCS.NS",
+    "TECHM.NS",
+    "TITAN.NS",
+    "ULTRACEMCO.NS",
+    "WIPRO.NS"
   ],
-  "n_symbols": 9,
+  "n_symbols": 29,
   "date_range": [
     "2025-12-02",
     "2026-09-01"
   ],
   "train_cutoff": "2026-06-15",
-  "n_train": 1134,
-  "n_test": 495,
+  "n_train": 3654,
+  "n_test": 1595,
   "k_sigma": 2.0,
   "n_forward_days": 3,
-  "trained_at": "2026-09-04T10:59:27.496684+00:00",
+  "trained_at": "2026-09-04T14:32:29.156092+00:00",
   "sample_note": "symbol-days, but overlapping 3-day label windows and correlated large-caps put the effective sample in the low hundreds \u2014 which is why this is 3 features, not 30"
 }

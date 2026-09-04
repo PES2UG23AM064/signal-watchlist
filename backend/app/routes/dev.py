@@ -1,7 +1,7 @@
 """Dev/demo endpoints. Auth-scoped (only touch the caller's own state) and Replay-only."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException
 
@@ -31,7 +31,7 @@ async def inject(body: InjectRequest, user: User = CurrentUser) -> dict:
     if not settings.enable_dev_endpoints:
         raise HTTPException(404, "dev endpoints disabled")
     symbol = normalize(body.symbol)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     if body.kind == "stale":
         poller.pause(symbol, STALE_OUTAGE_S)
@@ -84,13 +84,17 @@ async def rewind(minutes: int = 15, user: User = CurrentUser) -> dict:
     if not 1 <= minutes <= 180:
         raise HTTPException(400, "minutes must be in [1, 180]")
 
-    then = datetime.now(timezone.utc).timestamp() - minutes * 60
-    then_dt = datetime.fromtimestamp(then, tz=timezone.utc)
+    then = datetime.now(UTC).timestamp() - minutes * 60
+    then_dt = datetime.fromtimestamp(then, tz=UTC)
     idx_then = p.price_volume_at(INDEX_SYMBOL, then)[0]
     async with db.pool().acquire() as conn:
         symbols = await services._symbols_for(conn, user.id)
         async with conn.transaction():
+            rewound = 0
             for sym in symbols:
+                if not p.can_quote(sym):   # no real anchor (e.g. a delisted ticker) -> nothing to reconstruct
+                    continue
                 price_then = p.price_volume_at(sym, then)[0]
                 await services.force_snapshot(conn, user.id, sym, price_then, then_dt, idx_then)
-    return {"rewound_minutes": minutes, "symbols": len(symbols), "as_of": then_dt.isoformat()}
+                rewound += 1
+    return {"rewound_minutes": minutes, "symbols": rewound, "as_of": then_dt.isoformat()}

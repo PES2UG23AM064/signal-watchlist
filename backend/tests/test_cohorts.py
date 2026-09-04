@@ -12,7 +12,7 @@ from app.providers.yahoo import Candle
 
 def _candles(closes, start=date(2025, 1, 1), skip_days=()):
     out, d = [], start
-    for i, c in enumerate(closes):
+    for c in closes:
         while d.weekday() >= 5 or d in skip_days:
             d += timedelta(days=1)
         out.append(Candle(day=d, open=c, high=c, low=c, close=float(c), volume=1_000_000))
@@ -103,4 +103,4 @@ def test_peer_residual_flags_the_one_moving_alone_not_the_pack():
     # a numpy.bool_ from `abs(np.float64) >= 2` 500'd /state once).
     for v in res.values():
         if v is not None:
-            assert type(v[0]) is float and type(v[1]) is float
+            assert v[0].__class__ is float and v[1].__class__ is float  # exact type: np.float64 must NOT pass

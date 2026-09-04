@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import json
 import pathlib
-from datetime import date
 
 import numpy as np
 from sklearn.metrics import adjusted_rand_score

@@ -3,9 +3,7 @@ about its source, and a failing upstream is not hammered while the breaker is op
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
-
-import pytest
+from datetime import UTC, datetime
 
 from app.providers.base import Quote
 from app.providers.composite import CircuitBreaker, CompositeProvider
@@ -17,14 +15,14 @@ class FakeLive:
     async def get_quote(self, symbol):
         self.calls += 1
         if self.fail: raise RuntimeError("upstream down")
-        return Quote(symbol=symbol, price=100.0, volume=1, event_time=datetime.now(timezone.utc), source=self.name)
+        return Quote(symbol=symbol, price=100.0, volume=1, event_time=datetime.now(UTC), source=self.name)
     async def get_quotes(self, symbols): return {s: await self.get_quote(s) for s in symbols}
 
 
 class FakeReplay:
     name = "replay"
     async def get_quote(self, symbol):
-        return Quote(symbol=symbol, price=99.0, volume=1, event_time=datetime.now(timezone.utc), source=self.name)
+        return Quote(symbol=symbol, price=99.0, volume=1, event_time=datetime.now(UTC), source=self.name)
     async def get_quotes(self, symbols): return {s: await self.get_quote(s) for s in symbols}
 
 
@@ -54,7 +52,7 @@ def test_primary_used_when_open_and_healthy():
 def test_failure_falls_back_for_that_quote_and_trips_breaker_after_threshold():
     cp, live, _ = _cp()
     live.fail = True
-    for i in range(3):
+    for _ in range(3):
         q = asyncio.run(cp.get_quote("X.NS"))
         assert q.source == "replay"          # never an exception, never a missing quote
     assert cp.breaker.state() == "open" and live.calls == 3
@@ -80,7 +78,7 @@ class FakeSecondary:
     def __init__(self, price=100.5, fail=False): self.price = price; self.fail = fail
     async def get_quote(self, symbol):
         if self.fail: raise RuntimeError("secondary down")
-        return Quote(symbol=symbol, price=self.price, volume=1, event_time=datetime.now(timezone.utc), source=self.name)
+        return Quote(symbol=symbol, price=self.price, volume=1, event_time=datetime.now(UTC), source=self.name)
     async def get_quotes(self, symbols): return {s: await self.get_quote(s) for s in symbols}
 
 

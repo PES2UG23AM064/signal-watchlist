@@ -4,14 +4,14 @@
   * the attention score is transparent and monotonic in rupees at stake."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.models import Change, Explain, Provenance, Signal, Snapshot, WatchRow
 from app.services import _changes_from_rows, attention_score
 
 
 def _row(sym, pct, unusual, qty=None, price=1000.0, flat=False):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     seen_price = price / (1 + pct / 100)
     ch = Change(abs=round(price - seen_price, 4), pct=0.0 if flat else pct,
                 direction="flat" if flat else ("up" if pct > 0 else "down"))

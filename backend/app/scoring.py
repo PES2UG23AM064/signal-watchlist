@@ -1,8 +1,8 @@
-"""Meaningfulness scoring — deterministic features + flags/reasons, and a LEARNED ordering.
+"""Meaningfulness scoring — deterministic features, plain-English flags, and a DESCRIPTIVE ordering.
 
 Two paths share ONE feature definition (this is what makes "the exact same scoring function runs in
 the backtest and in production" true rather than a claim):
-  * bar path  (backtest / training): features for day t from bars <= t ONLY. No look-ahead.
+  * bar path  (backtest): features for day t from bars <= t ONLY. No look-ahead (tested).
   * live path (the digest): the same 3 features on the since-you-last-looked window, with the move
     normalized by sigma * sqrt(elapsed) — square-root-of-time scaling, a stated assumption.
 
@@ -12,18 +12,15 @@ The 3 features (kept deliberately few: the effective sample is in the low hundre
   log_vol_ratio  log(volume / trailing-20d mean volume)
   cross_flag     1 if price broke the trailing 52w high/low (reference EXCLUDES the current bar)
 
-The model (logistic regression, fit OFFLINE in ml/train_scorer.py, shipped as model/scoring_model.json)
-only ORDERS: it maps features -> follow-through probability, used as priority. It never creates or
-suppresses a flag; every deterministic flag still renders with its plain-English reason. If the artifact
-is missing we fall back to transparent heuristic weights and label the result 'heuristic'.
+NO LEARNED MODEL SHIPS. ml/train_scorer.py tested three pre-registered predictive labels on a year of
+real NSE candles (follow-through, direction, volatility clustering); none had a test AUC whose 95%
+bootstrap CI excluded 0.5. So this module never predicts: flags are fixed thresholds, and the ranking
+is a transparent measure of how unusual what ALREADY happened was. The receipts are served at /model.
 """
 from __future__ import annotations
 
-import json
 import math
-import pathlib
 from dataclasses import dataclass
-from functools import lru_cache
 
 import numpy as np
 
@@ -31,8 +28,8 @@ LOOKBACK = 252          # trailing window for sigma / beta / 52w reference
 MIN_BARS = 60           # need this much history before a bar is scorable
 VOL_WINDOW = 20
 
-# Deterministic flag thresholds -> the "reasons". The model does NOT change these.
-Z_FLAG = 2.0            # >= 2 sigma market-adjusted move
+# Deterministic flag thresholds -> the "reasons".
+Z_FLAG = 2.0            # >= 2 sigma market-adjusted move (~95th percentile of this stock's own moves)
 VOL_FLAG = 1.5          # >= 1.5x normal volume
 
 # Live-path time scaling. NSE session = 6h15m. Below ~15 min the sqrt-time scaling is not meaningful.
@@ -40,7 +37,6 @@ TRADING_DAY_S = 6.25 * 3600
 MIN_ELAPSED_S = 15 * 60
 
 FEATURE_NAMES = ["abs_resid_z", "log_vol_ratio", "cross_flag"]
-MODEL_PATH = pathlib.Path(__file__).resolve().parent / "model" / "scoring_model.json"
 
 
 @dataclass(frozen=True)
@@ -54,7 +50,7 @@ class Trailing:
 
 @dataclass(frozen=True)
 class Features:
-    # model inputs
+    # the 3 features
     abs_resid_z: float
     log_vol_ratio: float
     cross_flag: float
@@ -147,16 +143,17 @@ def _assemble(move, idx_move, beta, sigma, vol, avg_vol, price_now, price_ref, h
 # --------------------------------------------------------------------------- flags & reasons (deterministic)
 
 def flags_and_reasons(f: Features) -> list[str]:
-    """Plain-English reasons. Purely threshold-driven; the model never touches these."""
+    """Short plain-English reasons a person can read in a second. The numbers behind each one (sigma,
+    market-adjusted %, exact level) live in the explain panel, not on the card. Threshold-driven only."""
     reasons: list[str] = []
     if f.abs_resid_z >= Z_FLAG:
-        reasons.append(f"{f.abs_resid_z:.1f}σ move vs its own volatility, market-adjusted")
+        reasons.append("Unusual move for this stock, even after the market's move")
     if f.vol_ratio >= VOL_FLAG:
-        reasons.append(f"{f.vol_ratio:.1f}× normal volume")
+        reasons.append(f"Volume {f.vol_ratio:.1f}× normal")
     if f.crossed == "high":
-        reasons.append("crossed its 52-week high")
+        reasons.append("Broke its 52-week high")
     elif f.crossed == "low":
-        reasons.append("crossed its 52-week low")
+        reasons.append("Broke its 52-week low")
     return reasons
 
 
@@ -166,41 +163,9 @@ def unusualness(f: Features) -> float:
     """PRIORITY for the digest: a DESCRIPTIVE measure of how unusual what already happened was, in
     roughly sigma-equivalent units — market-adjusted move (in sigma) + excess log-volume + a 52w break.
 
-    Weights are a deliberate, transparent 1:1:1. The backtest (ml/train_scorer.py) tested whether these
-    features PREDICT follow-through on a year of real NSE candles and found no edge (AUC ~0.5), so we
-    do not pretend to have learned asymmetric predictive weights, and we never present this as a
-    forecast. It ranks what was unusual; it does not predict what comes next."""
+    Weights are a deliberate, transparent 1:1:1 (the caller may add a capped path term for a spike that
+    retraced, and a peer-divergence term — both in the same sigma-ish units). The backtest tested whether
+    learned weights would PREDICT anything on a year of real NSE candles and found nothing beyond noise,
+    so we do not pretend to have learned asymmetric weights and never present this as a forecast. It
+    ranks what was unusual; it does not predict what comes next."""
     return f.abs_resid_z + max(f.log_vol_ratio, 0.0) + f.cross_flag
-
-
-# --------------------------------------------------------------------------- the one learned signal
-
-@lru_cache(maxsize=1)
-def load_model() -> dict | None:
-    """The committed artifact from ml/train_scorer.py (the ACTIVITY model); None -> no outlook tag."""
-    try:
-        m = json.loads(MODEL_PATH.read_text(encoding="utf-8"))
-        if m.get("features") != FEATURE_NAMES:
-            return None
-        return m
-    except (OSError, ValueError):
-        return None
-
-
-def _sigmoid(x: float) -> float:
-    return 1.0 / (1.0 + math.exp(-x))
-
-
-def activity_outlook(f: Features) -> tuple[float, str] | None:
-    """The ONE learned signal the real data supports: probability this stock is entering an ACTIVE
-    period (realized variance over the next few days exceeding its trailing norm — volatility
-    clustering). Fit offline on real candles; weak but genuine (test AUC ~0.54, top-decile lift ~1.5x),
-    driven almost entirely by relative volume. A secondary tag: never the ranking, never a direction
-    call. Runtime is standardize -> dot -> sigmoid; no sklearn. None if the artifact is absent."""
-    m = load_model()
-    if m is None:
-        return None
-    mean, std = np.array(m["mean"]), np.array(m["std"])
-    std = np.where(std > 0, std, 1.0)
-    z = float(np.dot((f.vector() - mean) / std, np.array(m["coef"])) + m["intercept"])
-    return _sigmoid(z), m["version"]

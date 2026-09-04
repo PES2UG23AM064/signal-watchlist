@@ -7,7 +7,7 @@ Hours: 09:15–15:30 IST, Mon–Fri, excluding trading holidays.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timezone
+from datetime import UTC, date, datetime, time
 from zoneinfo import ZoneInfo
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -53,7 +53,7 @@ def _holiday_name(d: date) -> str | None:
 
 
 def market_status(now_utc: datetime | None = None) -> MarketStatus:
-    now = (now_utc or datetime.now(timezone.utc)).astimezone(IST)
+    now = (now_utc or datetime.now(UTC)).astimezone(IST)
     d, t = now.date(), now.time()
 
     holiday = _holiday_name(d)

@@ -2,11 +2,202 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ---------------------------------------------------------------------------
+   Design tokens. Light and dark are the same components with a different set of
+   values — no component in this app hard-codes a colour.
+   Values are space-separated RGB channels so Tailwind can apply opacity to them.
+--------------------------------------------------------------------------- */
+
 :root {
   color-scheme: light;
+
+  --bg: 244 246 249;
+  --surface: 255 255 255;
+  --surface-2: 241 244 248;
+  --border: 226 231 238;
+  --border-strong: 205 213 225;
+
+  --text: 15 23 42;
+  --text-2: 71 85 105;
+  --text-3: 105 118 138;
+  --text-4: 145 157 175;
+
+  --brand: 0 179 134;
+  --brand-dark: 0 150 112;
+  --up: 0 158 118;
+  --down: 224 76 58;
+
+  /* Cyan, not green: "the price is live" must never read as "the stock is up". */
+  --fresh: 8 145 178;
+  --delayed: 194 105 10;
+  --stale: 210 40 40;
+  --sim: 92 96 226;
+  --cohort: 124 76 238;
+  --alone: 194 105 10;
+
+  --shadow-card: 0 1px 2px 0 rgb(15 23 42 / 0.04), 0 1px 3px 0 rgb(15 23 42 / 0.06);
+  --shadow-lift: 0 4px 12px -2px rgb(15 23 42 / 0.1), 0 2px 6px -2px rgb(15 23 42 / 0.06);
+  --shadow-drawer: 0 10px 40px -8px rgb(15 23 42 / 0.25);
 }
 
-body {
-  @apply bg-slate-50 text-slate-900 antialiased;
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+.dark {
+  color-scheme: dark;
+
+  --bg: 9 12 19;
+  --surface: 18 23 33;
+  --surface-2: 27 34 47;
+  --border: 39 48 65;
+  --border-strong: 55 67 88;
+
+  --text: 236 241 248;
+  --text-2: 179 191 208;
+  --text-3: 141 154 174;
+  --text-4: 110 124 145;
+
+  --brand: 16 201 154;
+  --brand-dark: 0 179 134;
+  --up: 52 211 153;
+  --down: 251 113 133;
+
+  --fresh: 34 211 238;
+  --delayed: 251 191 36;
+  --stale: 248 113 113;
+  --sim: 129 140 248;
+  --cohort: 167 139 250;
+  --alone: 251 191 36;
+
+  --shadow-card: 0 1px 2px 0 rgb(0 0 0 / 0.3);
+  --shadow-lift: 0 6px 18px -4px rgb(0 0 0 / 0.5), 0 2px 6px -2px rgb(0 0 0 / 0.4);
+  --shadow-drawer: 0 12px 48px -8px rgb(0 0 0 / 0.6);
+}
+
+@layer base {
+  body {
+    @apply bg-app text-ink antialiased;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+
+  /* Every price, percentage and count lines up in columns. */
+  .num,
+  input[inputmode="numeric"] {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+  }
+
+  :focus-visible {
+    @apply outline-none ring-2 ring-brand/60 ring-offset-2 ring-offset-app rounded-[6px];
+  }
+
+  ::selection {
+    @apply bg-brand/25;
+  }
+}
+
+@layer components {
+  /* --- Surfaces --------------------------------------------------------- */
+  .card {
+    @apply bg-surface rounded-card border border-line shadow-card;
+  }
+
+  /* --- Chips: one shape, colour carries the meaning ---------------------- */
+  .chip {
+    @apply inline-flex items-center gap-1 text-2xs leading-none px-1.5 py-1 rounded-md font-medium whitespace-nowrap;
+  }
+  .chip-fresh {
+    @apply bg-fresh/10 text-fresh;
+  }
+  .chip-delayed {
+    @apply bg-delayed/10 text-delayed;
+  }
+  .chip-stale {
+    @apply bg-stale/10 text-stale;
+  }
+  .chip-sim {
+    @apply bg-sim/10 text-sim;
+  }
+  .chip-cohort {
+    @apply bg-cohort/10 text-cohort;
+  }
+  .chip-alone {
+    @apply bg-alone/15 text-alone;
+  }
+  .chip-up {
+    @apply bg-up/10 text-up;
+  }
+  .chip-down {
+    @apply bg-down/10 text-down;
+  }
+  .chip-brand {
+    @apply bg-brand/[0.12] text-brand-dark dark:text-brand;
+  }
+  .chip-neutral {
+    @apply bg-surface2 text-ink-3;
+  }
+
+  /* --- Buttons: one primary, everything else recedes --------------------- */
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-lg font-medium
+           transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-sm {
+    @apply text-xs px-2.5 py-1.5;
+  }
+  .btn-md {
+    @apply text-sm px-4 py-2.5;
+  }
+  .btn-primary {
+    @apply bg-brand text-white hover:bg-brand-dark dark:text-app;
+  }
+  .btn-soft {
+    @apply bg-surface2 text-ink-2 hover:text-ink hover:bg-line;
+  }
+  .btn-ghost {
+    @apply text-ink-3 hover:text-ink hover:bg-surface2;
+  }
+  .btn-outline {
+    @apply border border-line bg-surface text-ink-2 hover:border-line-strong hover:text-ink;
+  }
+
+  /* --- Form fields ------------------------------------------------------- */
+  .field {
+    @apply w-full px-3 py-2.5 rounded-lg border border-line bg-surface text-sm text-ink
+           placeholder:text-ink-4 transition-colors duration-150
+           focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/25;
+  }
+  .field-error {
+    @apply border-down focus:border-down focus:ring-down/25;
+  }
+
+  .eyebrow {
+    @apply text-2xs font-semibold uppercase tracking-[0.08em] text-ink-4;
+  }
+
+  /* --- Skeleton --------------------------------------------------------- */
+  .skeleton {
+    @apply relative overflow-hidden bg-surface2 rounded-md;
+  }
+  .skeleton::after {
+    content: "";
+    @apply absolute inset-0 -translate-x-full;
+    background-image: linear-gradient(90deg, transparent, rgb(var(--border-strong) / 0.5), transparent);
+    animation: shimmer 1.4s infinite;
+  }
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
