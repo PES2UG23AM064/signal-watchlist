@@ -2,7 +2,7 @@
 
 Explicit "create account" vs "sign in" (a typo in your email must never silently create a second, empty
 account). Deliberately not OAuth (documented in README). Lifecycle (a fintech panel will ask):
-  * passwords are bcrypt-hashed (cost 12); never stored or logged in clear;
+  * passwords are bcrypt-hashed (cost BCRYPT_ROUNDS); never stored or logged in clear;
   * one session PER DEVICE (sessions table, tokens stored hashed): signing in on your phone does not
     sign your laptop out — the watchlist follows you, and so does being signed in;
   * sessions EXPIRE (TOKEN_TTL_DAYS from issue);
@@ -49,8 +49,11 @@ class Session:
     user: User
 
 
+BCRYPT_ROUNDS = 10  # OWASP's floor; cost 12 was ~2s of a free-tier vCPU per sign-in (each hash records its cost)
+
+
 def _hash(password: str) -> str:
-    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=BCRYPT_ROUNDS)).decode("utf-8")
 
 
 def _verify(password: str, password_hash: str) -> bool:

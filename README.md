@@ -385,7 +385,11 @@ hit 6.5s against a 5s interval and `/state` took 3–7s — the cause was N+1 ro
 RTT (Render Oregon ↔ Supabase Singapore). Fixes shipped: the poller writes a whole cycle in one
 `executemany`; peak-excursion reads are one `unnest` join; cohort candles load in one query; `/state` runs
 its independent reads concurrently. Result: warm `/state` ~1s from a laptop in India, poller cycle well under
-the interval. The remaining step is colocating app and database (a Render region setting, not code).
+the interval. The remaining step is colocating app and database, and `render.yaml` now pins the API to
+Render's **Singapore** region for exactly that reason. Render cannot move an existing service between regions,
+so to apply it to an already-deployed API: delete the `signal-watchlist-api` service in the dashboard, run
+**Blueprint → Manual Sync** so it is recreated in Singapore under the same name (the subdomain is reused), and
+re-enter `DATABASE_URL`. The static site needs no move — it is served from a CDN.
 
 ---
 

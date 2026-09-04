@@ -20,7 +20,11 @@ MIGRATIONS_DIR = pathlib.Path(__file__).resolve().parent.parent / "migrations"
 async def connect() -> None:
     global _pool
     if _pool is None:
-        _pool = await asyncpg.create_pool(settings.database_url, min_size=1, max_size=10)
+        # Two warm connections so the first request doesn't pay a cross-region TLS handshake, but a HARD
+        # ceiling: Supabase's session pooler allows 15 clients per project in total. Each instance holds up
+        # to max_size + 1 (the poller's lock session), and the deployed API, a developer's local instance
+        # and a CI run all share that 15. 4 + 1 each keeps three of them under it.
+        _pool = await asyncpg.create_pool(settings.database_url, min_size=2, max_size=4)
 
 
 async def disconnect() -> None:

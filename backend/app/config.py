@@ -10,8 +10,9 @@ class Settings(BaseSettings):
     database_url: str
     cors_origins: str = "http://localhost:5173"
     # Also allow this project's own Render deployments without hardcoding the exact URL (the frontend
-    # and API get separate onrender.com subdomains). Regex is matched by CORSMiddleware.
-    cors_origin_regex: str = r"https://.*\.onrender\.com"
+    # and API get separate onrender.com subdomains), and any local dev origin — `127.0.0.1:5173` must
+    # work exactly like `localhost:5173`, or a browser that picked one reads "Failed to fetch".
+    cors_origin_regex: str = r"^(https://.*\.onrender\.com|http://(localhost|127\.0\.0\.1)(:\d+)?)$"
     market_provider: str = "replay"
     replay_seed: int = 42
 

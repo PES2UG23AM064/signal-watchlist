@@ -160,15 +160,42 @@ async def add_symbol(user_id: str, raw_symbol: str) -> str:
         )
     if b is not None:
         _sync_replay_profile(b)
-        async with db.pool().acquire() as conn:
-            await _sync_replay_groups(conn)  # a new symbol may join (or form) a pack
-    await _ensure_quote(symbol)
-    await _ensure_quote(INDEX_SYMBOL)
+    # The symbol and the index need a fresh quote before the snapshot; they are independent fetches.
+    await asyncio.gather(_ensure_quote(symbol), _ensure_quote(INDEX_SYMBOL))
     # Adding a symbol IS looking at it: the price on screen at this moment becomes the first baseline, so
     # "what changed since I last looked" works from the first return visit — no separate "Seen" needed.
     # Idempotent re-adds go through the monotonic guard, so they can never move an existing baseline back.
-    await mark_seen(user_id, symbol)
+    async with db.pool().acquire() as conn:
+        latest = await quotes.latest_quotes(conn, [symbol, INDEX_SYMBOL])
+        if symbol in latest:
+            idx = latest[INDEX_SYMBOL].price if INDEX_SYMBOL in latest else None
+            await _snapshot_upsert(conn, user_id, symbol, latest[symbol], idx)
+    if b is not None:
+        # A new symbol may join (or form) a simulator pack. That re-clusters every watched symbol's candles —
+        # the slowest thing in this path and nothing the caller is waiting on. It runs after we respond; a
+        # failure there is logged, never surfaced as a failed add.
+        _background(_resync_replay_groups(), "replay pack re-sync")
     return symbol
+
+
+_BACKGROUND: set[asyncio.Task] = set()
+
+
+def _background(coro, what: str) -> None:
+    """Fire-and-forget with a kept reference (a bare create_task can be garbage-collected mid-flight)."""
+    task = asyncio.create_task(coro)
+    _BACKGROUND.add(task)
+
+    def _done(t: asyncio.Task) -> None:
+        _BACKGROUND.discard(t)
+        if not t.cancelled() and t.exception() is not None:
+            log.warning("%s failed: %r", what, t.exception())
+    task.add_done_callback(_done)
+
+
+async def _resync_replay_groups() -> None:
+    async with db.pool().acquire() as conn:
+        await _sync_replay_groups(conn)
 
 
 async def remove_symbol(user_id: str, symbol: str) -> bool:
