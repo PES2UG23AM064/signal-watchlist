@@ -1,0 +1,39 @@
+# Render Blueprint — deploys Signal as two free services:
+#   1. signal-watchlist-api : FastAPI + the in-process poller (one container)
+#   2. signal-watchlist-web : the React static site (Vite build)
+#
+# After the first deploy you set two secrets in the dashboard (never committed):
+#   - DATABASE_URL on the API  -> your Supabase SESSION-mode string (URL-encode any '@' as %40)
+#   - VITE_API_URL on the web  -> the API's public URL (e.g. https://signal-watchlist-api.onrender.com)
+# then redeploy the web service so the build picks up VITE_API_URL.
+#
+# CORS: the API already allows any https://*.onrender.com origin (see app/config.py), so the two
+# services talk without hardcoding the web URL.
+
+services:
+  - name: signal-watchlist-api
+    type: web
+    runtime: python
+    rootDir: ./backend
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.0"
+      - key: DATABASE_URL
+        sync: false            # paste your Supabase connection string in the dashboard
+      - key: CORS_ORIGINS
+        value: http://localhost:5173
+
+  - name: signal-watchlist-web
+    type: web
+    runtime: static
+    rootDir: ./frontend
+    plan: free
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: VITE_API_URL
+        sync: false            # set to the API URL after the first deploy, then redeploy this service
