@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 import asyncpg
 
-from . import db, quotes
+from . import baselines, db, quotes
 from .models import Change, ChangeRow, Provenance, Snapshot, WatchRow
 from .providers import Quote, get_provider
 from .quotes import LatestQuote
@@ -74,6 +74,9 @@ async def add_symbol(user_id: str, raw_symbol: str) -> str:
             user_id, symbol,
         )
     await _ensure_quote(symbol)  # bootstrap data (dedup'd, no network under a held connection)
+    # Real daily-candle baselines (cached, refreshed when stale) so the scoring denominators are honest
+    # from the moment a symbol is added. Yahoo down -> returns None and scoring degrades gracefully.
+    await baselines.ensure_baselines(symbol)
     return symbol
 
 
