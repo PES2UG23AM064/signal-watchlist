@@ -85,9 +85,10 @@ async def main() -> None:
 
     # Sanity quarantine: a garbage quote (price=0) is stored but NEVER served as the latest truth.
     async with db.pool().acquire() as conn:
-        good_before = (await quotes.latest_quotes(conn, ["RELIANCE.NS"]))["RELIANCE.NS"].price
+        prev_lq = (await quotes.latest_quotes(conn, ["RELIANCE.NS"]))["RELIANCE.NS"]
+        good_before = prev_lq.price
         garbage = Quote(symbol="RELIANCE.NS", price=0.0, volume=1, event_time=datetime.now(timezone.utc), source="replay")
-        stored_ok = await quotes.record_quote(conn, garbage, prev_price=good_before)
+        stored_ok = await quotes.record_quote(conn, garbage, prev=prev_lq)
         good_after = (await quotes.latest_quotes(conn, ["RELIANCE.NS"]))["RELIANCE.NS"].price
     assert stored_ok is False, "garbage quote should be flagged suspect"
     assert good_after == good_before, "garbage quote must not become the served latest price"

@@ -20,6 +20,11 @@ from .providers import Quote
 # jump beyond that is not a market move — it's bad or CONFLICTING upstream data (we hit this for real:
 # two pollers with different anchors writing to one table). Quarantine it rather than serve it.
 MAX_TICK_JUMP = 0.20  # 20% — NSE's widest circuit band
+# A jump is only judged against a RECENT reference. Against a quote from 5 seconds ago, a 30% jump is
+# garbage; against one from an hour ago the market may simply have moved (overnight gap, an outage).
+# Without this, a wrong-but-latest reference would quarantine every CORRECT quote forever — a poison
+# we hit for real after the dual-writer incident.
+JUMP_REF_MAX_AGE_S = 300
 # A quote whose event_time is meaningfully in the FUTURE (provider clock skew, a bad
 # regularMarketTime) is dangerous: since "latest = max(event_time)" and freshness = now - event_time,
 # it would pin itself as the permanent latest and report negative age -> "fresh" forever. Quarantine it.
@@ -50,23 +55,25 @@ class LatestQuote:
         return "stale"
 
 
-def is_suspect(quote: Quote, prev_price: float | None, now: datetime | None = None) -> bool:
-    """A quote is suspect if it's structurally impossible, an implausible single-tick jump, or
-    stamped in the future (which would poison the latest-by-event_time read forever)."""
+def is_suspect(quote: Quote, prev_price: float | None, now: datetime | None = None,
+               prev_event_time: datetime | None = None) -> bool:
+    """A quote is suspect if it's structurally impossible, stamped in the future (which would poison
+    the latest-by-event_time read), or an implausible single-tick jump vs a RECENT reference."""
     now = now or datetime.now(timezone.utc)
     if quote.price <= 0 or quote.volume < 0:
         return True
     if (quote.event_time - now).total_seconds() > MAX_FUTURE_SKEW_S:
         return True
     if prev_price is not None and prev_price > 0:
-        if abs(quote.price - prev_price) / prev_price > MAX_TICK_JUMP:
+        ref_is_recent = prev_event_time is None or (now - prev_event_time).total_seconds() <= JUMP_REF_MAX_AGE_S
+        if ref_is_recent and abs(quote.price - prev_price) / prev_price > MAX_TICK_JUMP:
             return True
     return False
 
 
-async def record_quote(conn: asyncpg.Connection, quote: Quote, prev_price: float | None) -> bool:
+async def record_quote(conn: asyncpg.Connection, quote: Quote, prev: "LatestQuote | None") -> bool:
     """Append a quote (idempotent on (symbol, event_time)). Returns True if it passed sanity."""
-    suspect = is_suspect(quote, prev_price)
+    suspect = is_suspect(quote, prev.price if prev else None, prev_event_time=prev.event_time if prev else None)
     await conn.execute(
         """
         insert into quotes (symbol, price, volume, event_time, source, is_suspect)

@@ -88,6 +88,18 @@ class ChangeRow(BaseModel):
     change_since_seen: Change
     signal: Signal
     headline: str                  # reasons joined, or the plain % move if nothing unusual fired
+    # Co-movement cohorts (presentation only — every row is still listed; grouping never hides a symbol):
+    cohort_id: int | None = None   # which of the user's cohorts this symbol belongs to
+    peer_residual_z: float | None = None  # move vs the median of cohort peers, in sigma of that residual
+    moving_alone: bool = False     # |peer_residual_z| >= 2: promote — this one is doing something its peers aren't
+
+
+class CohortInfo(BaseModel):
+    """One co-movement cohort in the user's watchlist, for the client to collapse co-movers into a card."""
+
+    id: int
+    members: list[str]
+    mean_corr: float | None        # mean pairwise return correlation among members (None for singletons)
 
 
 class MarketStatusModel(BaseModel):
@@ -101,4 +113,5 @@ class StateResponse(BaseModel):
 
     market: MarketStatusModel
     items: list[WatchRow]
-    changes: list[ChangeRow]
+    changes: list[ChangeRow]       # ALL moved symbols, ranked (never filtered by the model or by grouping)
+    cohorts: list[CohortInfo] = []  # the user's co-movement cohorts (multi-member ones drive group cards)

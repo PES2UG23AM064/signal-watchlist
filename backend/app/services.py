@@ -81,7 +81,7 @@ async def _ensure_quote(symbol: str) -> None:
         return
     async with db.pool().acquire() as conn:
         prev = await quotes.latest_quotes(conn, [symbol])
-        await quotes.record_quote(conn, q, prev[symbol].price if symbol in prev else None)
+        await quotes.record_quote(conn, q, prev.get(symbol))
 
 
 # --------------------------------------------------------------------------- watchlist CRUD

@@ -52,6 +52,17 @@ def test_no_prev_price_only_checks_structure():
     assert is_suspect(_q(0.0), prev_price=None) is True
 
 
+def test_jump_only_judged_against_recent_reference():
+    # A 30% jump vs a quote from 5s ago is garbage. Vs a quote from an hour ago it may be a legitimate
+    # gap — and a stale wrong reference must never quarantine correct data forever (the poison we hit).
+    now = datetime.now(timezone.utc)
+    q = _q(1690.0)  # +30% vs 1300
+    assert is_suspect(q, prev_price=1300.0, now=now, prev_event_time=now - timedelta(seconds=5)) is True
+    assert is_suspect(q, prev_price=1300.0, now=now, prev_event_time=now - timedelta(hours=1)) is False
+    # Unknown reference age -> conservative: still judged.
+    assert is_suspect(q, prev_price=1300.0, now=now, prev_event_time=None) is True
+
+
 def test_future_timestamp_is_suspect():
     # A quote stamped far in the future would poison the latest-by-event_time read forever.
     future = datetime.now(timezone.utc) + timedelta(minutes=1)

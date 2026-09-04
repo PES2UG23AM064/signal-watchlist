@@ -48,8 +48,7 @@ async def poll_once(pool: asyncpg.Pool) -> int:
     async with pool.acquire() as conn:
         async with conn.transaction():
             for sym, q in fetched.items():
-                prev_price = prev[sym].price if sym in prev else None
-                await quotes.record_quote(conn, q, prev_price)
+                await quotes.record_quote(conn, q, prev.get(sym))
     return len(symbols)
 
 
